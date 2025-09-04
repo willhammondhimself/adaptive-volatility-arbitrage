@@ -1,0 +1,31 @@
+# Default configuration for Volatility Arbitrage Backtesting Engine
+
+data:
+  source: yahoo
+  cache_dir: data/cache
+  start_date: "2020-01-01"
+  end_date: "2024-01-01"
+  symbols:
+    - SPY
+    - QQQ
+
+backtest:
+  initial_capital: 100000.0
+  commission_rate: 0.001  # 0.1%
+  slippage: 0.0005  # 0.05%
+  position_size_pct: 0.1  # 10% max per position
+  max_positions: 10
+  risk_free_rate: 0.05  # 5% annual
+
+volatility:
+  method: garch
+  lookback_period: 30
+  ewma_lambda: 0.94
+  garch_p: 1
+  garch_q: 1
+
+logging:
+  level: INFO
+  format: json
+  log_dir: logs
+  console_output: true
