@@ -1,0 +1,61 @@
+# Volatility Arbitrage Strategy Configuration
+
+data:
+  source: yahoo
+  cache_dir: data/cache
+  start_date: "2023-01-01"
+  end_date: "2024-01-01"
+  symbols:
+    - SPY  # S&P 500 ETF
+
+backtest:
+  initial_capital: 100000.0
+  commission_rate: 0.0015  # 0.15% for options (higher than stocks)
+  slippage: 0.001  # 0.1% slippage
+  position_size_pct: 0.05  # 5% per position
+  max_positions: 5
+  risk_free_rate: 0.05  # 5% annual
+
+strategy:
+  # Entry/Exit Thresholds
+  entry_threshold_pct: 5.0  # Enter when spread >= 5%
+  exit_threshold_pct: 2.0   # Exit when spread <= 2%
+
+  # Time Constraints
+  min_days_to_expiry: 14  # At least 2 weeks
+  max_days_to_expiry: 60  # At most 2 months
+
+  # Delta Hedging
+  delta_rebalance_threshold: 0.10  # Rehedge when delta > 0.10
+  delta_target: 0.0  # Target delta-neutral
+
+  # Position Sizing
+  position_size_pct: 5.0  # 5% of capital per trade
+  max_vega_exposure: 1000  # Max vega per position
+  max_positions: 5
+
+  # Volatility Forecasting
+  vol_lookback_period: 30  # 30 days for volatility calculation
+  vol_forecast_method: "garch"  # garch, ewma, or historical
+
+  # Risk Management
+  max_loss_pct: 50.0  # Stop loss at 50% of premium paid
+
+# Options Data Quality Filters
+options:
+  min_volume: 10  # Minimum daily volume
+  min_open_interest: 50  # Minimum open interest
+  max_spread_pct: 0.20  # Max 20% bid-ask spread
+
+volatility:
+  method: garch
+  lookback_period: 30
+  ewma_lambda: 0.94
+  garch_p: 1
+  garch_q: 1
+
+logging:
+  level: INFO
+  format: json
+  log_dir: logs
+  console_output: true
