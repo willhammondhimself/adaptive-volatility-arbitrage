@@ -71,6 +71,7 @@ target/
 
 # Jupyter Notebook
 .ipynb_checkpoints
+*.ipynb_checkpoints/
 
 # IPython
 profile_default/
@@ -97,6 +98,7 @@ celerybeat.pid
 
 # Environments
 .env
+.env.local
 .venv
 env/
 venv/
@@ -141,8 +143,12 @@ Thumbs.db
 
 # Project specific
 data/raw/
+data/raw/*.csv
 data/processed/
+data/*.feather
 results/
+results/*.png
+results/*.json
 logs/*.log
 *.parquet
 *.h5
