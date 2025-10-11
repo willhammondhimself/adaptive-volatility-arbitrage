@@ -1,11 +1,11 @@
-# Adaptive Volatility Arbitrage Backtesting Engine
+# Volatility Arbitrage Engine
 
-![Tests](https://github.com/willhammond/adaptive-volatility-arbitrage/workflows/Tests/badge.svg)
-![Python](https://img.shields.io/badge/python-3.11%20%7C%203.12-blue)
-![Code style: black](https://img.shields.io/badge/code%20style-black-000000.svg)
-![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
+[![workflow](https://github.com/willhammondhimself/adaptive-volatility-arbitrage/actions/workflows/tests.yml/badge.svg?style=flat-square)](https://github.com/willhammondhimself/adaptive-volatility-arbitrage/actions)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11+-3776ab?style=flat-square&logo=python&logoColor=white)](https://www.python.org/downloads/)
+[![Black](https://img.shields.io/badge/code%20style-Black-000000?style=flat-square)](https://github.com/psf/black)
+[![MIT License](https://img.shields.io/badge/License-MIT-green?style=flat-square)](LICENSE)
 
-A production-grade quantitative finance system for backtesting volatility arbitrage strategies with advanced stochastic volatility modeling and machine learning-based regime detection. Built for research-grade analysis with institutional-quality code standards.
+Production-grade volatility arbitrage backtesting system with Heston stochastic volatility, adaptive regime detection, and delta-neutral options trading.
 
 ## Overview
 
