@@ -198,7 +198,7 @@ class TestGreeks:
 
     def test_atm_delta_approximately_half(self):
         """Test that ATM call delta is approximately 0.5 when r=0."""
-        # When r=0, ATM call delta should be exactly 0.5
+        # When r=0, ATM call delta is close to 0.5 (affected by vol term)
         greeks = BlackScholesModel.greeks(
             S=Decimal("100"),
             K=Decimal("100"),
@@ -208,7 +208,8 @@ class TestGreeks:
             option_type=OptionType.CALL,
         )
 
-        assert abs(greeks.delta - Decimal("0.5")) < Decimal("0.01")
+        # Delta ≈ 0.54 due to sigma²/2 term in d1 formula
+        assert abs(greeks.delta - Decimal("0.5")) < Decimal("0.05")
 
     def test_atm_delta_with_positive_rate(self):
         """Test that ATM call delta > 0.5 when r > 0."""
