@@ -197,7 +197,22 @@ class TestGreeks:
         assert greeks.theta < 0
 
     def test_atm_delta_approximately_half(self):
-        """Test that ATM call delta is approximately 0.5."""
+        """Test that ATM call delta is approximately 0.5 when r=0."""
+        # When r=0, ATM call delta should be exactly 0.5
+        greeks = BlackScholesModel.greeks(
+            S=Decimal("100"),
+            K=Decimal("100"),
+            T=Decimal("1"),
+            r=Decimal("0"),  # Risk-free rate = 0
+            sigma=Decimal("0.2"),
+            option_type=OptionType.CALL,
+        )
+
+        assert abs(greeks.delta - Decimal("0.5")) < Decimal("0.01")
+
+    def test_atm_delta_with_positive_rate(self):
+        """Test that ATM call delta > 0.5 when r > 0."""
+        # With positive r, forward is above spot, so ATM call delta > 0.5
         greeks = BlackScholesModel.greeks(
             S=Decimal("100"),
             K=Decimal("100"),
@@ -207,8 +222,8 @@ class TestGreeks:
             option_type=OptionType.CALL,
         )
 
-        # ATM call delta should be around 0.5
-        assert abs(greeks.delta - Decimal("0.5")) < Decimal("0.1")
+        # Delta should be around 0.6368 (N(0.35))
+        assert Decimal("0.63") < greeks.delta < Decimal("0.64")
 
 
 @pytest.mark.unit
