@@ -11,6 +11,19 @@ from volatility_arbitrage.models.volatility import (
     EWMAVolatility,
     GARCHVolatility,
 )
+from volatility_arbitrage.models.heston import (
+    HestonModel,
+    HestonParameters,
+    HestonCalibrator,
+    compare_to_black_scholes,
+)
+from volatility_arbitrage.models.regime import (
+    RegimeDetector,
+    RegimeStatistics,
+    GaussianMixtureRegimeDetector,
+    HiddenMarkovRegimeDetector,
+    regime_conditional_metrics,
+)
 
 __all__ = [
     "BlackScholesModel",
@@ -20,4 +33,13 @@ __all__ = [
     "HistoricalVolatility",
     "EWMAVolatility",
     "GARCHVolatility",
+    "HestonModel",
+    "HestonParameters",
+    "HestonCalibrator",
+    "compare_to_black_scholes",
+    "RegimeDetector",
+    "RegimeStatistics",
+    "GaussianMixtureRegimeDetector",
+    "HiddenMarkovRegimeDetector",
+    "regime_conditional_metrics",
 ]
