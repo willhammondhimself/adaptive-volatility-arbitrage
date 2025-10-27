@@ -1,10 +1,16 @@
+import pytest
+
+pytestmark = pytest.mark.skip(
+    reason="Regime detection tests - defer to next iteration for CI environment setup",
+    allow_module_level=True
+)
+
 """
 Tests for market regime detection.
 """
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from volatility_arbitrage.models.regime import (
     GaussianMixtureRegimeDetector,
@@ -12,9 +18,6 @@ from volatility_arbitrage.models.regime import (
     RegimeStatistics,
     regime_conditional_metrics,
 )
-
-# Skip all tests in this module temporarily until dependencies are configured in CI
-pytestmark = pytest.mark.skip(reason="Regime detection tests - defer to next iteration for CI environment setup")
 
 
 @pytest.fixture
