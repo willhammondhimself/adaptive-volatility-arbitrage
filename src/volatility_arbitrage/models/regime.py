@@ -18,9 +18,9 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from hmmlearn import hmm
-from sklearn.mixture import GaussianMixture
-from sklearn.preprocessing import StandardScaler
+from hmmlearn import hmm  # type: ignore
+from sklearn.mixture import GaussianMixture  # type: ignore
+from sklearn.preprocessing import StandardScaler  # type: ignore
 
 from volatility_arbitrage.utils.logging import get_logger
 
