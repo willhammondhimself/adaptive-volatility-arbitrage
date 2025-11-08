@@ -18,10 +18,15 @@ import pandas as pd
 
 from volatility_arbitrage.core.types import OptionChain, OptionContract, Position, OptionType
 from volatility_arbitrage.models.black_scholes import BlackScholesModel
-from volatility_arbitrage.models.regime import RegimeDetector
 from volatility_arbitrage.models.volatility import GARCHVolatility, calculate_returns
 from volatility_arbitrage.strategy.base import Strategy, Signal
 from volatility_arbitrage.utils.logging import get_logger
+
+# Optional regime detection - gracefully handle if dependencies not available
+try:
+    from volatility_arbitrage.models.regime import RegimeDetector
+except ImportError:
+    RegimeDetector = None  # type: ignore
 
 logger = get_logger(__name__)
 
