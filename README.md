@@ -18,8 +18,6 @@ This backtesting engine implements delta-neutral volatility arbitrage strategies
 - **Event-Driven Architecture**: Realistic execution with transaction costs and slippage
 - **Comprehensive Metrics**: Regime-conditional performance analysis and risk metrics
 
-Target firms: Citadel, Jane Street, Two Sigma, and other systematic trading firms.
-
 ## Backtesting Results
 
 ### Overall Performance (SPY 2023-2024)
