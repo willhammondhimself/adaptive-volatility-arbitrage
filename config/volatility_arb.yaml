@@ -41,6 +41,33 @@ strategy:
   # Risk Management
   max_loss_pct: 50.0  # Stop loss at 50% of premium paid
 
+  # Regime Detection (optional)
+  use_regime_detection: false  # Set to true to enable regime-aware trading
+  regime_lookback_period: 60  # Days of returns for regime detection
+  exit_on_regime_transition: false  # Exit all positions when regime changes
+
+  # Regime-Specific Parameters
+  # Maps regime_id to entry/exit thresholds and position sizing
+  # Regime 0: Low volatility - tighter thresholds, larger positions
+  # Regime 1: Medium volatility - baseline parameters
+  # Regime 2: High volatility - wider thresholds, smaller positions
+  regime_params:
+    0:  # Low volatility regime
+      entry_threshold_pct: 3.0  # Enter at 3% spread (more aggressive)
+      exit_threshold_pct: 1.5   # Exit at 1.5% spread
+      position_size_multiplier: 1.5  # 50% larger positions
+      max_vega_multiplier: 1.5
+    1:  # Medium volatility regime
+      entry_threshold_pct: 5.0  # Baseline threshold
+      exit_threshold_pct: 2.0   # Baseline exit
+      position_size_multiplier: 1.0  # Baseline size
+      max_vega_multiplier: 1.0
+    2:  # High volatility regime
+      entry_threshold_pct: 8.0  # Enter at 8% spread (more conservative)
+      exit_threshold_pct: 3.0   # Exit at 3% spread
+      position_size_multiplier: 0.5  # 50% smaller positions
+      max_vega_multiplier: 0.5
+
 # Options Data Quality Filters
 options:
   min_volume: 10  # Minimum daily volume

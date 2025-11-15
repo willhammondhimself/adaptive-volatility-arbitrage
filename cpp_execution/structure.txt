@@ -1,0 +1,125 @@
+# C++ Execution Gateway - Project Structure
+
+## Directory Tree
+
+cpp_execution/
+├── CMakeLists.txt                  # Cross-platform build configuration
+├── README_CPP.md                   # Build and usage instructions
+├── structure.txt                   # This file - project organization reference
+├── proto/
+│   └── messages.proto              # Protobuf schema definitions
+├── include/                        # Public headers
+│   ├── lock_free_queue.hpp         # Thread-safe queue (mutex + lock-free reference)
+│   └── order_book.hpp              # Order matching engine
+├── src/                            # Implementation files
+│   ├── order_book.cpp              # Order book implementation
+│   └── server.cpp                  # Main executable (Thread A + Thread B)
+├── tests/                          # Unit tests (optional)
+│   ├── test_order_book.cpp         # Google Test for order book
+│   └── test_queue.cpp              # Google Test for queue
+└── scripts/                        # Helper scripts
+    └── test_client.py              # Python test client for integration testing
+
+## File Descriptions
+
+### Core Implementation Files
+
+**messages.proto**
+- Protobuf schema defining 4 message types
+- NewOrderRequest: Orders from Python → C++
+- OrderResponse: Immediate ACK/REJECT from C++
+- ExecutionReport: Fill notifications (multiple per order for partial fills)
+- MarketDataUpdate: Top-of-book broadcasts
+
+**include/lock_free_queue.hpp**
+- Thread-safe producer-consumer queue
+- Primary implementation: std::queue with mutex (production-ready)
+- Educational reference: SPSC lock-free ring buffer (commented)
+
+**include/order_book.hpp**
+- Order matching engine with price-time priority
+- LIMIT and MARKET order support
+- Top-of-book tracking for market data publishing
+
+**src/order_book.cpp**
+- Implementation of order matching algorithms
+- Multi-level fill handling with weighted average pricing
+
+**src/server.cpp**
+- Main entry point with two-thread architecture:
+  - Thread A: Network server (ZeroMQ REP socket)
+  - Thread B: Matching engine (processes queue, publishes market data)
+- Graceful shutdown handling (SIGINT/SIGTERM)
+
+### Build System
+
+**CMakeLists.txt**
+- Cross-platform build configuration
+- Dependency finding: ZeroMQ, Protobuf
+- Protobuf code generation
+- Compiler settings (C++17, warnings)
+
+### Documentation
+
+**README_CPP.md**
+- Installation instructions (macOS Homebrew, Windows vcpkg)
+- Build commands for each platform
+- Usage examples (starting server, Python client)
+- Troubleshooting guide
+
+### Testing (Optional)
+
+**tests/test_order_book.cpp**
+- Unit tests for order matching logic
+- Test cases: price-time priority, partial fills, MARKET orders
+
+**tests/test_queue.cpp**
+- Unit tests for thread-safe queue
+- Test cases: concurrent push/pop, capacity limits
+
+**scripts/test_client.py**
+- Python client demonstrating ZeroMQ/Protobuf integration
+- Example order submissions and market data subscription
+- Useful for manual testing and debugging
+
+## Build Artifacts (Generated)
+
+After running CMake and compiling, additional directories will be created:
+
+build/                              # Build output directory
+├── execution_gateway               # Main executable (macOS/Linux)
+├── execution_gateway.exe           # Main executable (Windows)
+├── proto/                          # Generated Protobuf C++ code
+│   ├── messages.pb.h
+│   └── messages.pb.cc
+└── lib/                            # Compiled libraries
+
+## Integration with Python Backtester
+
+The C++ execution gateway is a standalone process that communicates with the
+Python backtester via ZeroMQ sockets:
+
+- **Order Flow**: Python → ZeroMQ REQ → C++ (REP socket)
+- **Market Data**: C++ (PUB socket) → ZeroMQ SUB → Python
+
+The existing Python backtester in src/volatility_arbitrage/ can optionally
+use this C++ gateway by:
+1. Starting the C++ server process
+2. Replacing engine._execute_signal() with ZeroMQ order submission
+3. Subscribing to market data updates for realistic simulation
+
+## Performance Characteristics
+
+Target latencies (local loopback):
+- Queue push/pop: <100 nanoseconds (mutex-based: ~300ns, lock-free: ~80ns)
+- Order matching: <1 microsecond for simple limit order
+- Network round-trip: <100 microseconds (ZeroMQ REQ/REP)
+- Market data publish: <10 microseconds (ZeroMQ PUB)
+
+## Design Philosophy
+
+This implementation prioritizes:
+1. **Educational clarity**: Extensive comments explaining every design decision
+2. **Production robustness**: No crashes on bad input, comprehensive error handling
+3. **Cross-platform support**: Builds on macOS (Apple Silicon), Windows, Linux
+4. **Portfolio demonstration**: Shows understanding of low-latency systems, threading, IPC

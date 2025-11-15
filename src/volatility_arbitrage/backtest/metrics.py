@@ -371,3 +371,261 @@ def print_metrics(metrics: PerformanceMetrics) -> None:
     print(f"  Trading Days:        {metrics.trading_days:>6}")
 
     print("=" * 60 + "\n")
+
+
+@dataclass(frozen=True)
+class RegimeConditionalMetrics:
+    """
+    Performance metrics split by market regime.
+
+    Allows analyzing how strategy performs in different volatility regimes.
+    """
+
+    regime_id: int
+    observations: int
+    total_return: Decimal
+    annualized_return: Decimal
+    sharpe_ratio: Decimal
+    volatility: Decimal
+    max_drawdown_pct: Decimal
+    num_trades: int
+    win_rate: Decimal
+
+    def to_dict(self) -> dict:
+        """Convert metrics to dictionary."""
+        return {
+            "regime_id": self.regime_id,
+            "observations": self.observations,
+            "total_return": float(self.total_return),
+            "annualized_return": float(self.annualized_return),
+            "sharpe_ratio": float(self.sharpe_ratio),
+            "volatility": float(self.volatility),
+            "max_drawdown_pct": float(self.max_drawdown_pct),
+            "num_trades": self.num_trades,
+            "win_rate": float(self.win_rate),
+        }
+
+
+@dataclass(frozen=True)
+class GreeksAttribution:
+    """
+    P&L attribution to individual Greeks.
+
+    Decomposes portfolio returns into delta, gamma, vega, and theta contributions.
+    """
+
+    total_pnl: Decimal
+    delta_pnl: Decimal
+    gamma_pnl: Decimal
+    vega_pnl: Decimal
+    theta_pnl: Decimal
+    other_pnl: Decimal  # Residual
+
+    delta_pct: Decimal
+    gamma_pct: Decimal
+    vega_pct: Decimal
+    theta_pct: Decimal
+
+    def to_dict(self) -> dict:
+        """Convert attribution to dictionary."""
+        return {
+            "total_pnl": float(self.total_pnl),
+            "delta_pnl": float(self.delta_pnl),
+            "gamma_pnl": float(self.gamma_pnl),
+            "vega_pnl": float(self.vega_pnl),
+            "theta_pnl": float(self.theta_pnl),
+            "other_pnl": float(self.other_pnl),
+            "delta_pct": float(self.delta_pct),
+            "gamma_pct": float(self.gamma_pct),
+            "vega_pct": float(self.vega_pct),
+            "theta_pct": float(self.theta_pct),
+        }
+
+
+def calculate_regime_conditional_metrics(
+    equity_curve: pd.DataFrame,
+    regime_labels: pd.Series,
+    trades_df: Optional[pd.DataFrame] = None,
+    risk_free_rate: Decimal = Decimal("0.05"),
+) -> list[RegimeConditionalMetrics]:
+    """
+    Calculate performance metrics conditional on market regime.
+
+    Args:
+        equity_curve: DataFrame with equity over time (must have datetime index)
+        regime_labels: Series of regime labels (same index as equity_curve)
+        trades_df: Optional DataFrame of trades with regime information
+        risk_free_rate: Annual risk-free rate
+
+    Returns:
+        List of RegimeConditionalMetrics, one per regime
+    """
+    if equity_curve.empty or regime_labels.empty:
+        logger.warning("Empty data for regime conditional metrics")
+        return []
+
+    # Align regime labels with equity curve
+    aligned_regimes = regime_labels.reindex(equity_curve.index, method="ffill")
+
+    # Calculate returns
+    equity_series = equity_curve["total_equity"]
+    returns = calculate_returns(equity_series)
+
+    results = []
+
+    for regime_id in sorted(aligned_regimes.unique()):
+        if pd.isna(regime_id):
+            continue
+
+        regime_id_int = int(regime_id)
+
+        # Filter data for this regime
+        regime_mask = aligned_regimes == regime_id
+        regime_returns = returns[regime_mask]
+        regime_equity = equity_series[regime_mask]
+
+        if len(regime_returns) < 2:
+            continue
+
+        # Calculate metrics
+        total_return = regime_equity.iloc[-1] - regime_equity.iloc[0]
+        years = len(regime_returns) / 252
+        annualized_return = (
+            ((regime_equity.iloc[-1] / regime_equity.iloc[0]) ** (1 / years) - 1) * Decimal("100")
+            if years > 0 and regime_equity.iloc[0] > 0
+            else Decimal("0")
+        )
+
+        sharpe = calculate_sharpe_ratio(regime_returns, risk_free_rate)
+        volatility = Decimal(str(regime_returns.std() * np.sqrt(252) * 100)) if len(regime_returns) > 1 else Decimal("0")
+
+        _, max_dd_pct = calculate_max_drawdown(regime_equity)
+
+        # Trade statistics
+        num_trades = 0
+        wins = 0
+        if trades_df is not None and "regime" in trades_df.columns:
+            regime_trades = trades_df[trades_df["regime"] == regime_id_int]
+            num_trades = len(regime_trades)
+            if "pnl" in regime_trades.columns:
+                wins = len(regime_trades[regime_trades["pnl"] > 0])
+
+        win_rate = Decimal(str(wins / num_trades * 100)) if num_trades > 0 else Decimal("0")
+
+        metrics = RegimeConditionalMetrics(
+            regime_id=regime_id_int,
+            observations=len(regime_returns),
+            total_return=Decimal(str(total_return)),
+            annualized_return=annualized_return,
+            sharpe_ratio=sharpe,
+            volatility=volatility,
+            max_drawdown_pct=max_dd_pct,
+            num_trades=num_trades,
+            win_rate=win_rate,
+        )
+
+        results.append(metrics)
+
+    return results
+
+
+def calculate_greeks_attribution(
+    portfolio_history: pd.DataFrame,
+) -> GreeksAttribution:
+    """
+    Calculate P&L attribution to individual Greeks.
+
+    Approximates daily P&L contributions from delta, gamma, vega, and theta.
+
+    Args:
+        portfolio_history: DataFrame with columns:
+            - total_equity: Portfolio value
+            - total_delta: Portfolio delta
+            - total_gamma: Portfolio gamma
+            - total_vega: Portfolio vega
+            - total_theta: Portfolio theta
+            - underlying_price: Underlying price (for delta/gamma calculation)
+            - implied_volatility: Implied volatility (for vega calculation)
+
+    Returns:
+        GreeksAttribution with P&L decomposition
+    """
+    if portfolio_history.empty or len(portfolio_history) < 2:
+        logger.warning("Insufficient data for Greeks attribution")
+        return GreeksAttribution(
+            total_pnl=Decimal("0"),
+            delta_pnl=Decimal("0"),
+            gamma_pnl=Decimal("0"),
+            vega_pnl=Decimal("0"),
+            theta_pnl=Decimal("0"),
+            other_pnl=Decimal("0"),
+            delta_pct=Decimal("0"),
+            gamma_pct=Decimal("0"),
+            vega_pct=Decimal("0"),
+            theta_pct=Decimal("0"),
+        )
+
+    # Calculate total P&L
+    total_pnl = portfolio_history["total_equity"].iloc[-1] - portfolio_history["total_equity"].iloc[0]
+
+    # Calculate daily changes
+    price_change = portfolio_history["underlying_price"].diff().fillna(0) if "underlying_price" in portfolio_history.columns else pd.Series(0, index=portfolio_history.index)
+    vol_change = portfolio_history["implied_volatility"].diff().fillna(0) if "implied_volatility" in portfolio_history.columns else pd.Series(0, index=portfolio_history.index)
+
+    # Calculate P&L contributions
+    # Delta P&L: Delta * ΔS
+    if "total_delta" in portfolio_history.columns:
+        delta_contribution = (portfolio_history["total_delta"].shift(1) * price_change).sum()
+    else:
+        delta_contribution = 0
+
+    # Gamma P&L: 0.5 * Gamma * (ΔS)²
+    if "total_gamma" in portfolio_history.columns:
+        gamma_contribution = (0.5 * portfolio_history["total_gamma"].shift(1) * price_change ** 2).sum()
+    else:
+        gamma_contribution = 0
+
+    # Vega P&L: Vega * Δσ
+    if "total_vega" in portfolio_history.columns:
+        vega_contribution = (portfolio_history["total_vega"].shift(1) * vol_change).sum()
+    else:
+        vega_contribution = 0
+
+    # Theta P&L: Theta * Δt (assuming 1 day)
+    if "total_theta" in portfolio_history.columns:
+        theta_contribution = portfolio_history["total_theta"].sum()
+    else:
+        theta_contribution = 0
+
+    # Convert to Decimal
+    delta_pnl = Decimal(str(delta_contribution))
+    gamma_pnl = Decimal(str(gamma_contribution))
+    vega_pnl = Decimal(str(vega_contribution))
+    theta_pnl = Decimal(str(theta_contribution))
+
+    # Residual (unexplained P&L)
+    explained_pnl = delta_pnl + gamma_pnl + vega_pnl + theta_pnl
+    other_pnl = Decimal(str(total_pnl)) - explained_pnl
+
+    # Calculate percentages
+    total_abs = abs(Decimal(str(total_pnl)))
+    if total_abs > 0:
+        delta_pct = (delta_pnl / total_abs) * Decimal("100")
+        gamma_pct = (gamma_pnl / total_abs) * Decimal("100")
+        vega_pct = (vega_pnl / total_abs) * Decimal("100")
+        theta_pct = (theta_pnl / total_abs) * Decimal("100")
+    else:
+        delta_pct = gamma_pct = vega_pct = theta_pct = Decimal("0")
+
+    return GreeksAttribution(
+        total_pnl=Decimal(str(total_pnl)),
+        delta_pnl=delta_pnl,
+        gamma_pnl=gamma_pnl,
+        vega_pnl=vega_pnl,
+        theta_pnl=theta_pnl,
+        other_pnl=other_pnl,
+        delta_pct=delta_pct,
+        gamma_pct=gamma_pct,
+        vega_pct=vega_pct,
+        theta_pct=theta_pct,
+    )

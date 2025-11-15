@@ -156,6 +156,22 @@ YahooFinance API → yfinance library → YahooFinanceFetcher
    - `GARCHVolatility`: GARCH(p,q) with MLE estimation
    - Abstract `VolatilityForecaster` base class
 
+3. **heston.py** - Stochastic volatility model
+   - `HestonParameters`: Model parameters with validation
+   - `HestonModel`: Option pricing with stochastic volatility
+   - `HestonCalibrator`: L-BFGS-B parameter calibration
+   - `compare_to_black_scholes()`: Model comparison utilities
+   - Characteristic function-based pricing
+   - Numerical integration for P1 and P2 probabilities
+
+4. **regime.py** - Market regime detection
+   - `RegimeDetector`: Abstract base class for regime detection
+   - `GaussianMixtureRegimeDetector`: GMM-based regime clustering
+   - `HiddenMarkovRegimeDetector`: HMM-based with transition probabilities
+   - `RegimeStatistics`: Per-regime performance metrics
+   - `regime_conditional_metrics()`: Performance analysis by regime
+   - Supports multiple features (returns, volatility, volume)
+
 **Mathematical Foundations**:
 
 Black-Scholes Formula:
@@ -175,11 +191,39 @@ GARCH(1,1):
 where ω > 0, α ≥ 0, β ≥ 0, α + β < 1
 ```
 
+Heston Model (1993):
+```
+dS_t = μS_t dt + √v_t S_t dW_1
+dv_t = κ(θ - v_t)dt + ξ√v_t dW_2
+dW_1 dW_2 = ρ dt
+
+where:
+v_t: instantaneous variance
+θ: long-term variance
+κ: mean reversion speed
+ξ: volatility of volatility
+ρ: correlation between stock and volatility
+
+Feller Condition: 2κθ > ξ² (ensures variance stays positive)
+```
+
+Gaussian Mixture Model (Regime Detection):
+```
+p(x) = Σ π_k N(x | μ_k, Σ_k)
+
+where:
+π_k: mixture weight for regime k
+μ_k: mean vector for regime k
+Σ_k: covariance matrix for regime k
+```
+
 **Design Decisions**:
 - Separated pricing from data structures
 - All calculations use Decimal for precision
 - Graceful degradation (fallbacks for edge cases)
 - Comprehensive numerical stability checks
+- Regime detection uses standardized features
+- Heston calibration with bounded optimization
 
 ### Strategy Layer (`strategy/`)
 
@@ -209,12 +253,52 @@ where ω > 0, α ≥ 0, β ≥ 0, α + β < 1
   - Statistical arbitrage
   - Mean reversion
 
+**Regime-Aware Strategy Enhancement**:
+
+The volatility arbitrage strategy supports regime detection for adaptive parameter adjustment:
+
+```python
+class VolatilityArbitrageStrategy:
+    def __init__(self, config, regime_detector=None):
+        self.regime_detector = regime_detector
+        self.current_regime = None
+
+    def generate_signals(self, timestamp, market_data, positions):
+        # Detect current regime
+        if self.config.use_regime_detection:
+            regime = self._detect_current_regime(market_data)
+
+            # Handle regime transition
+            if self.current_regime != regime:
+                signals = self._handle_regime_transition(regime, positions)
+                self.current_regime = regime
+
+        # Get regime-specific parameters
+        entry_threshold, exit_threshold, pos_multiplier = self._get_regime_parameters(regime)
+
+        # Generate signals with adaptive thresholds
+        ...
+```
+
+**Regime-Specific Parameters**:
+
+| Regime | Classification | Entry Threshold | Position Size | Use Case |
+|--------|---------------|-----------------|---------------|----------|
+| 0 | Low Volatility | 3.0% (aggressive) | 1.5x larger | Stable markets |
+| 1 | Medium Volatility | 5.0% (baseline) | 1.0x baseline | Normal markets |
+| 2 | High Volatility | 8.0% (conservative) | 0.5x smaller | Crisis periods |
+
 **Strategy Lifecycle**:
 ```
 on_backtest_start()
     │
     ▼
 Daily Loop: generate_signals()
+    │
+    ├─► Detect regime (if enabled)
+    ├─► Handle regime transition
+    ├─► Get regime-specific parameters
+    └─► Generate signals with adaptive thresholds
     │
     ▼
 on_trade_executed() (callback)
@@ -242,6 +326,8 @@ on_backtest_end()
    - Risk metrics (volatility, drawdown)
    - Risk-adjusted metrics (Sharpe, Sortino, Calmar)
    - Trade statistics (win rate, profit factor)
+   - **Regime-conditional metrics** (performance split by market regime)
+   - **Greeks attribution** (P&L decomposition by delta, gamma, vega, theta)
 
 **Engine State Machine**:
 ```
@@ -283,11 +369,74 @@ commission = trade_value * commission_rate
 total_cost = execution_price * quantity ± commission
 ```
 
+**Advanced Performance Analytics**:
+
+**Regime-Conditional Metrics**:
+
+Calculate performance metrics split by market regime to understand strategy behavior in different market conditions:
+
+```python
+@dataclass
+class RegimeConditionalMetrics:
+    regime_id: int
+    observations: int
+    total_return: Decimal
+    annualized_return: Decimal
+    sharpe_ratio: Decimal
+    volatility: Decimal
+    max_drawdown_pct: Decimal
+    num_trades: int
+    win_rate: Decimal
+```
+
+Workflow:
+1. Regime detector classifies each day into regime (0, 1, 2)
+2. Equity curve and returns are split by regime labels
+3. Performance metrics calculated separately for each regime
+4. Provides insights into which regimes drive performance
+
+Use cases:
+- Identify which regimes are profitable vs. unprofitable
+- Adjust strategy parameters for underperforming regimes
+- Understand strategy behavior in different market states
+- Optimize entry/exit rules per regime
+
+**Greeks Attribution Analysis**:
+
+Decompose portfolio P&L into contributions from individual Greeks:
+
+```python
+@dataclass
+class GreeksAttribution:
+    total_pnl: Decimal
+    delta_pnl: Decimal    # From underlying price movement
+    gamma_pnl: Decimal    # From delta hedging and convexity
+    vega_pnl: Decimal     # From volatility changes
+    theta_pnl: Decimal    # From time decay
+    other_pnl: Decimal    # Residual/unexplained
+```
+
+Attribution formulas:
+```
+Delta P&L = Σ (Δ_t-1 × ΔS_t)
+Gamma P&L = Σ (0.5 × Γ_t-1 × (ΔS_t)²)
+Vega P&L = Σ (V_t-1 × Δσ_t)
+Theta P&L = Σ θ_t
+```
+
+Use cases:
+- Understand sources of portfolio returns
+- Validate delta-neutral hedging effectiveness
+- Measure vega exposure profitability
+- Identify theta decay impact on options positions
+
 **Design Decisions**:
 - Event-driven to match real trading
 - Immutable trade records for audit trail
 - Separate position tracking from trades
 - Commission and slippage applied to all trades
+- Regime-conditional analysis for adaptive strategies
+- Greeks attribution for options portfolio insight
 
 ### Multi-Asset Backtest Engine (`backtest/multi_asset_engine.py`)
 
@@ -785,28 +934,61 @@ Exception
 4. **Logging**: No sensitive data in logs
 5. **Configuration**: Secrets in environment variables
 
+## Completed Phases
+
+### Phase 0 (Foundation)
+✅ Core type system with Pydantic validation
+✅ Configuration management with YAML
+✅ Black-Scholes pricing and Greeks
+✅ Volatility forecasting (Historical, EWMA, GARCH)
+✅ Event-driven backtest engine
+✅ Performance metrics and analytics
+
+### Phase 1 (Multi-Asset & Options)
+✅ Multi-asset backtest engine
+✅ Options execution model
+✅ Portfolio-level Greeks tracking
+✅ Delta-neutral hedging
+✅ Volatility arbitrage strategy
+✅ Advanced visualization
+
+### Phase 2 (Stochastic Volatility & Regimes)
+✅ Heston stochastic volatility model
+✅ L-BFGS-B calibration to market prices
+✅ Gaussian Mixture Model regime detection
+✅ Hidden Markov Model regime detection
+✅ Regime-aware strategy parameters
+✅ Regime-conditional performance metrics
+✅ Greeks attribution analysis
+✅ Research validation notebook
+
 ## Future Enhancements
 
-### Phase 1
-- Portfolio-level risk management
-- Multi-asset backtesting
-- Advanced order types (limit, stop-loss)
-- Optimization framework
+### Phase 3 (Advanced Analytics)
+- Walk-forward optimization
+- Monte Carlo simulation
+- Risk factor analysis
+- Portfolio optimization (Markowitz, Black-Litterman)
+- Transaction cost analysis
 
-### Phase 2
+### Phase 4 (Production Deployment)
 - Live trading integration
 - Real-time monitoring dashboard
-- Strategy optimization (walk-forward)
-- Machine learning integration
+- Alerting system for regime transitions
+- Parameter auto-tuning based on regime
+- Cloud deployment (AWS/GCP)
 
-### Phase 3
+### Phase 5 (Scale & Distribution)
 - Distributed backtesting
-- Cloud deployment
 - API for external access
-- Advanced visualization
+- Multi-strategy portfolio manager
+- Advanced interactive visualizations
+- Machine learning for regime prediction
 
 ## References
 
-- Black, F., & Scholes, M. (1973). The Pricing of Options and Corporate Liabilities
-- Bollerslev, T. (1986). Generalized Autoregressive Conditional Heteroskedasticity
-- Sharpe, W. F. (1994). The Sharpe Ratio
+- Black, F., & Scholes, M. (1973). The Pricing of Options and Corporate Liabilities. Journal of Political Economy, 81(3), 637-654.
+- Bollerslev, T. (1986). Generalized Autoregressive Conditional Heteroskedasticity. Journal of Econometrics, 31(3), 307-327.
+- Heston, S. L. (1993). A Closed-Form Solution for Options with Stochastic Volatility with Applications to Bond and Currency Options. The Review of Financial Studies, 6(2), 327-343.
+- Sharpe, W. F. (1994). The Sharpe Ratio. Journal of Portfolio Management, 21(1), 49-58.
+- Dempster, A. P., Laird, N. M., & Rubin, D. B. (1977). Maximum Likelihood from Incomplete Data via the EM Algorithm. Journal of the Royal Statistical Society, 39(1), 1-38.
