@@ -159,7 +159,11 @@ class HestonModel:
             (1 - np.exp(-d * T)) / (1 - g * np.exp(-d * T))
         )
 
-        return np.exp(C + D * v0)
+        cf = np.exp(C + D *v0)
+
+        cf = np.array(cf, dtype=complex)
+        cf[u == 0] = S * np.exp(r*T)
+        return cf
 
     def price(
         self,
@@ -330,7 +334,7 @@ class HestonCalibrator:
 
         # Initial guess
         if initial_guess is None:
-            initial_params = np.array([0.04, 0.04, 2.0, 0.5, -0.5])  # v0, theta, kappa, xi, rho
+            initial_params = np.array([0.04, 0.04, 2.0, 0.3, -0.5])  # v0, theta, kappa, xi, rho
         else:
             initial_params = np.array([
                 float(initial_guess.v0),

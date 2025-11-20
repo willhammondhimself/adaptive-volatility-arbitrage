@@ -235,103 +235,49 @@ class BlackScholesModel:
             vega=Decimal(str(vega)),
             rho=Decimal(str(rho)),
         )
+    
+    @staticmethod
+    def calculate_implied_volatility(market_price, S, K, T, r, option_type):
+        """
+        Calculate implied volatility from market price using Brent's method.
 
+        Args:
+            market_price: Observed market price (Decimal)
+            S: Spot price (Decimal)
+            K: Strike price (Decimal)
+            T: Time to expiration in years (Decimal)
+            r: Risk-free rate (Decimal)
+            option_type: CALL or PUT
 
-def calculate_implied_volatility(
-    market_price: Decimal,
-    S: Decimal,
-    K: Decimal,
-    T: Decimal,
-    r: Decimal,
-    option_type: OptionType,
-    initial_guess: float = 0.3,
-    max_iterations: int = 100,
-    tolerance: float = 1e-6,
-) -> Optional[Decimal]:
-    """
-    Calculate implied volatility using Newton-Raphson method.
+        Returns:
+            Implied volatility (Decimal) or None if calculation fails
 
-    Args:
-        market_price: Observed market price
-        S: Spot price
-        K: Strike price
-        T: Time to expiration (years)
-        r: Risk-free rate
-        option_type: CALL or PUT
-        initial_guess: Starting volatility guess
-        max_iterations: Maximum iterations
-        tolerance: Convergence tolerance
+        Note:
+            Returns None for:
+            - Zero or negative market price
+            - Expired options (T <= 0)
+            - When numerical solver fails to converge
+        """
+        from scipy.optimize import brentq
 
-    Returns:
-        Implied volatility or None if convergence fails
-
-    Example:
-        >>> iv = calculate_implied_volatility(
-        ...     market_price=Decimal("10.5"),
-        ...     S=Decimal("100"),
-        ...     K=Decimal("100"),
-        ...     T=Decimal("1"),
-        ...     r=Decimal("0.05"),
-        ...     option_type=OptionType.CALL
-        ... )
-    """
-    if T <= 0:
-        logger.warning("Cannot calculate IV for expired option")
-        return None
-
-    if market_price <= 0:
-        logger.warning("Market price <= 0, cannot calculate IV")
-        return None
-
-    def objective(sigma: float) -> float:
-        """Objective function: difference between BS price and market price."""
-        if sigma <= 0:
-            return float("inf")
-
-        bs_price = BlackScholesModel.price(
-            S, K, T, r, Decimal(str(sigma)), option_type
-        )
-        return float(bs_price) - float(market_price)
-
-    def vega_func(sigma: float) -> float:
-        """Derivative of price with respect to sigma (vega)."""
-        if sigma <= 0:
-            return 1e-10
-
-        greeks = BlackScholesModel.greeks(
-            S, K, T, r, Decimal(str(sigma)), option_type
-        )
-        # Convert vega from per 1% to per 1 unit
-        return float(greeks.vega) * 100
-
-    try:
-        # Use Newton-Raphson method via scipy
-        result = optimize.newton(
-            objective,
-            x0=initial_guess,
-            fprime=vega_func,
-            maxiter=max_iterations,
-            tol=tolerance,
-        )
-
-        if result > 0 and result < 5.0:  # Sanity check: IV between 0% and 500%
-            return Decimal(str(result))
-        else:
-            logger.warning(
-                f"IV out of reasonable range: {result}",
-                extra={"iv": result}
-            )
+        # Validate inputs
+        if market_price <= 0:
             return None
 
-    except (RuntimeError, ValueError) as e:
-        logger.warning(
-            f"IV calculation failed: {e}",
-            extra={
-                "market_price": float(market_price),
-                "S": float(S),
-                "K": float(K),
-                "T": float(T),
-                "error": str(e),
-            },
-        )
-        return None
+        if T <= 0:
+            return None
+
+        # Objective function: difference between model price and market price
+        def objective(vol):
+            return float(BlackScholesModel.price(
+                S, K, T, r, Decimal(str(vol)), option_type
+            )) - float(market_price)
+
+        try:
+            # Use Brent's method to find volatility that matches market price
+            # Search range: 0.0001% to 500% annualized volatility
+            result = brentq(objective, 1e-6, 5.0)
+            return Decimal(str(result))
+        except ValueError:
+            # Optimization failed (no solution in range, non-monotonic, etc.)
+            return None

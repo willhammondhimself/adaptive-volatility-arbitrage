@@ -10,7 +10,6 @@ from volatility_arbitrage.core.types import OptionType
 from volatility_arbitrage.models.black_scholes import (
     BlackScholesModel,
     Greeks,
-    calculate_implied_volatility,
 )
 
 
@@ -243,7 +242,7 @@ class TestImpliedVolatility:
         price = BlackScholesModel.price(S, K, T, r, sigma, OptionType.CALL)
 
         # Recover implied vol
-        iv = calculate_implied_volatility(price, S, K, T, r, OptionType.CALL)
+        iv = BlackScholesModel.calculate_implied_volatility(price, S, K, T, r, OptionType.CALL)
 
         # Should recover original volatility
         assert iv is not None
@@ -258,14 +257,14 @@ class TestImpliedVolatility:
         sigma = Decimal("0.20")
 
         price = BlackScholesModel.price(S, K, T, r, sigma, OptionType.CALL)
-        iv = calculate_implied_volatility(price, S, K, T, r, OptionType.CALL)
+        iv = BlackScholesModel.calculate_implied_volatility(price, S, K, T, r, OptionType.CALL)
 
         assert iv is not None
         assert abs(iv - sigma) < Decimal("0.01")
 
     def test_implied_vol_zero_price(self):
         """Test that zero price returns None."""
-        iv = calculate_implied_volatility(
+        iv = BlackScholesModel.calculate_implied_volatility(
             market_price=Decimal("0"),
             S=Decimal("100"),
             K=Decimal("100"),
@@ -278,7 +277,7 @@ class TestImpliedVolatility:
 
     def test_implied_vol_expired_option(self):
         """Test that expired option returns None."""
-        iv = calculate_implied_volatility(
+        iv = BlackScholesModel.calculate_implied_volatility(
             market_price=Decimal("10"),
             S=Decimal("100"),
             K=Decimal("100"),

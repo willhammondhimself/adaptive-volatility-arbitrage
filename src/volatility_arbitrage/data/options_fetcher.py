@@ -13,7 +13,7 @@ import pandas as pd
 
 from volatility_arbitrage.core.types import OptionChain, OptionContract, OptionType
 from volatility_arbitrage.data.yahoo import YahooFinanceFetcher
-from volatility_arbitrage.models.black_scholes import calculate_implied_volatility
+from volatility_arbitrage.models.black_scholes import BlackScholesModel
 from volatility_arbitrage.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -251,14 +251,13 @@ class YahooOptionsChainFetcher(YahooFinanceFetcher):
 
         # Calculate IV
         try:
-            iv = calculate_implied_volatility(
+            iv = BlackScholesModel.calculate_implied_volatility(
                 market_price=mid_price,
                 S=underlying_price,
                 K=option.strike,
                 T=time_to_expiry,
                 r=risk_free_rate,
                 option_type=option.option_type,
-                initial_guess=0.25,
             )
 
             if iv is not None:

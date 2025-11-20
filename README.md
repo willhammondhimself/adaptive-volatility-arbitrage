@@ -185,11 +185,24 @@ src/volatility_arbitrage/
 ├── strategy/                # Trading strategies
 │   ├── base.py             # Strategy interface
 │   └── volatility_arbitrage.py  # Vol arb implementation
+├── execution/               # Order execution
+│   ├── engine.py           # Python simulation
+│   └── cpp_gateway.py      # C++ gateway client
 ├── backtest/                # Backtesting engine
 │   ├── engine.py           # Event-driven engine
 │   └── metrics.py          # Performance metrics
 └── utils/
     └── logging.py           # Structured logging
+
+cpp_execution/              # C++ Execution Gateway
+├── src/
+│   ├── main.cpp           # Gateway server
+│   ├── order_book.cpp     # Price-time priority matching
+│   └── network_server.cpp # ZeroMQ networking
+├── include/
+│   └── *.hpp              # Header files
+└── proto/
+    └── messages.proto     # Protobuf schema
 ```
 
 ### Data Flow
@@ -211,6 +224,76 @@ Market Data → Volatility Forecasting → Regime Detection
 - **Observer Pattern**: Event-driven execution and monitoring
 - **Immutable Data**: All market data immutable with Pydantic
 - **Dependency Injection**: Configuration-driven component initialization
+
+## Execution Modes
+
+The backtesting engine supports **two execution methods** for realistic order simulation:
+
+### Python Execution (Default)
+
+Fast simulation mode with simplified order matching:
+
+- ✅ **Simple**: Everything in Python, easy to debug
+- ✅ **Fast Prototyping**: No separate process to manage
+- ✅ **Flexible**: Easy to modify execution logic
+- ❌ **Less Realistic**: Simplified order matching, instant fills
+
+**Best for**: Quick strategy prototyping, parameter optimization, educational purposes
+
+```python
+from volatility_arbitrage.backtest import BacktestEngine
+
+# Uses Python execution automatically
+engine = BacktestEngine(config)
+results = engine.run(strategy)
+```
+
+### C++ Gateway Execution (Advanced)
+
+Production-grade execution with realistic order matching:
+
+- ✅ **Realistic**: True exchange-like order matching with price-time priority
+- ✅ **Partial Fills**: Orders match against multiple resting orders
+- ✅ **Latency Modeling**: Inter-process communication adds realistic latency (~50-100μs)
+- ✅ **Multi-threaded**: Separate network and matching threads
+- ✅ **Portfolio Showcase**: Demonstrates low-latency systems knowledge
+
+**Best for**: Production-like backtests, latency-sensitive strategies, HFT research
+
+```python
+from volatility_arbitrage.backtest import BacktestEngine
+from volatility_arbitrage.execution.cpp_gateway import CppGatewayExecutor
+
+# Start C++ gateway (separate terminal)
+# cd cpp_execution/build && ./execution_gateway
+
+# Use C++ execution
+executor = CppGatewayExecutor(
+    order_endpoint="tcp://localhost:5555",
+    market_data_endpoint="tcp://localhost:5556"
+)
+engine = BacktestEngine(config, executor=executor)
+results = engine.run(strategy)
+```
+
+**Full documentation**: See [cpp_execution/USAGE_GUIDE.md](cpp_execution/USAGE_GUIDE.md) for:
+- Build and installation instructions
+- Detailed comparison of execution methods
+- Python integration examples
+- Message flow documentation
+- Performance tuning guide
+- Troubleshooting tips
+
+### C++ Gateway Features
+
+The C++ execution gateway implements:
+
+- **Price-Time Priority CLOB**: Industry-standard matching algorithm
+- **ZeroMQ Messaging**: REQ/REP for orders, PUB/SUB for market data
+- **Protocol Buffers**: Efficient binary serialization
+- **Fixed-Point Arithmetic**: Deterministic price calculations (price × 10,000)
+- **Thread-Safe Queues**: Lock-free SPSC queues for ultra-low latency
+- **Market Data Publishing**: Real-time top-of-book updates
 
 ## Volatility Arbitrage Strategy
 
@@ -475,6 +558,7 @@ pre-commit run --all-files
 
 ## Technologies
 
+### Python Stack
 - **Python**: 3.11+, 3.12
 - **Data Validation**: Pydantic
 - **Numerical Computing**: NumPy, SciPy
@@ -484,6 +568,13 @@ pre-commit run --all-files
 - **Testing**: pytest
 - **Type Checking**: mypy
 - **CI/CD**: GitHub Actions
+
+### C++ Stack (Optional)
+- **Language**: C++17
+- **Networking**: ZeroMQ (libzmq 4.3+)
+- **Serialization**: Protocol Buffers 3.0+
+- **Build System**: CMake 3.15+
+- **Threading**: STL threads with mutex/lock-free queues
 
 ## License
 
