@@ -75,7 +75,7 @@ PYTHONPATH=./src:. python3 -m pytest tests/ -v
 
 ### Real Example
 
-**Setup** (January 2024):
+**Setup** (January 2025):
 ```
 SPY = $450
 Implied Vol (from ATM straddle) = 15%
@@ -125,7 +125,7 @@ This system helps you:
 
 **Location**: [research/lib/heston_fft.py](research/lib/heston_fft.py)
 
-**Critical Bug Fix** (December 2024):
+**Critical Bug Fix** (November 2025):
 ```python
 # BEFORE: 30-200% errors on ITM/OTM options ❌
 # Grid: b = λ/2              (WRONG)
@@ -467,20 +467,20 @@ curl -X POST http://localhost:8000/api/v1/heston/price-surface \
 
 ## 🔍 Recent Updates
 
-### December 13, 2024: Repository Cleanup & Testing ✅
+### December 13, 2025: Repository Cleanup & Testing ✅
 - ✅ Cleaned up repository structure (docs/, strategies/, models/ folders)
 - ✅ Removed personal references and absolute paths
 - ✅ All 71 tests passing
 - ✅ Successfully pushed to GitHub
 
-### December 11, 2024: Interactive Dashboard Launch 🎉
+### November 28, 2025: Interactive Dashboard Launch 🎉
 - ✅ Built complete FastAPI backend with LRU caching
 - ✅ Created React frontend with Material-UI + Plotly.js
 - ✅ Real-time parameter controls with 500ms debouncing
 - ✅ 2D heatmap and 3D surface visualization
 - ✅ Zustand state management for smooth updates
 
-### December 2024: Heston FFT Bug Fix ⭐
+### November 2025: Heston FFT Bug Fix ⭐
 **Problem**: ITM/OTM options had 30-200% pricing errors
 
 **Root Cause**: Incorrect Carr-Madan (1999) FFT implementation
@@ -540,4 +540,4 @@ MIT License - See LICENSE file
 
 **Status**: Production-Ready ✅ | All Tests Passing ✅ | Dashboard Live ✅
 
-**Last Updated**: December 13, 2024
+**Last Updated**: December 13, 2025
