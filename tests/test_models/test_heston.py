@@ -120,7 +120,7 @@ class TestHestonModel:
             v0=Decimal("0.04"),  # 20% initial vol
             theta=Decimal("0.04"),  # 20% long-term vol
             kappa=Decimal("2.0"),
-            xi=Decimal("0.5"),
+            xi=Decimal("0.3"),
             rho=Decimal("-0.7"),
         )
 
@@ -238,7 +238,7 @@ class TestHestonCalibrator:
             v0=Decimal("0.04"),
             theta=Decimal("0.04"),
             kappa=Decimal("2.0"),
-            xi=Decimal("0.5"),
+            xi=Decimal("0.3"),
             rho=Decimal("-0.5"),
         )
 
@@ -271,10 +271,20 @@ class TestHestonCalibrator:
         # Calibrate
         calibrator = HestonCalibrator(loss_function="rmse")
 
+        # Use a different initial guess to test calibration (not the true params)
+        initial_guess = HestonParameters(
+            v0=Decimal("0.06"),  # Different from true: 0.04
+            theta=Decimal("0.05"),  # Different from true: 0.04
+            kappa=Decimal("1.5"),  # Different from true: 2.0
+            xi=Decimal("0.4"),  # Different from true: 0.3
+            rho=Decimal("-0.6"),  # Different from true: -0.5
+        )
+
         calibrated_params, diagnostics = calibrator.calibrate(
             S=S,
             r=r,
             market_prices=market_prices,
+            initial_guess=initial_guess,
         )
 
         # Check calibration succeeded
