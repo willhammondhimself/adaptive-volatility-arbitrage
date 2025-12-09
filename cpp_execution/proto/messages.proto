@@ -1,0 +1,213 @@
+// C++ Execution Gateway - Protobuf Message Definitions
+//
+// PURPOSE:
+// Defines the contract between Python backtester and C++ matching engine.
+// Uses fixed-point arithmetic (int64) for prices to avoid floating-point precision issues.
+//
+// DESIGN RATIONALE:
+// - Separation of concerns: OrderResponse for ACK/REJECT, ExecutionReport for fills
+// - Why separate? A single aggressive order can match multiple resting orders,
+//   requiring multiple ExecutionReport messages (one per contra order matched).
+// - Fixed-point prices: Matches Python's Decimal type, avoids 0.1 + 0.2 != 0.3 issues
+// - Explicit enums: Forces validation, prevents invalid states (e.g., side = 0)
+//
+// PROTOCOL FLOW:
+// 1. Python sends NewOrderRequest via ZeroMQ REQ socket
+// 2. C++ validates and queues order, immediately sends OrderResponse (ACCEPTED/REJECTED)
+// 3. Matching engine processes order asynchronously
+// 4. For each fill (partial or full), C++ sends ExecutionReport(s)
+// 5. C++ broadcasts MarketDataUpdate on separate PUB socket when top-of-book changes
+
+syntax = "proto3";
+
+package execution_gateway;
+
+//=============================================================================
+// ENUMERATIONS
+//=============================================================================
+
+// Side: Buy or Sell
+// Why explicit enums? Prevents accidental integer confusion (1 = BUY vs 0 = BUY?)
+enum Side {
+  SIDE_UNSPECIFIED = 0;  // Invalid default - forces explicit choice
+  BUY = 1;
+  SELL = 2;
+}
+
+// OrderType: Limit or Market
+// LIMIT: Rests in book if not immediately matchable
+// MARKET: Executes immediately at best available price or rejects
+enum OrderType {
+  ORDER_TYPE_UNSPECIFIED = 0;  // Invalid default
+  LIMIT = 1;
+  MARKET = 2;
+}
+
+// OrderStatus: Response to order submission (ACK/REJECT only)
+// Note: Fill status is reported via ExecutionReport, not here
+enum OrderStatus {
+  STATUS_UNSPECIFIED = 0;      // Invalid default
+  ACCEPTED = 1;                // Order queued for matching
+  REJECTED = 2;                // Order rejected (validation failed)
+}
+
+// ExecType: Execution report type
+// PARTIAL_FILL: Some quantity filled, leaves_quantity > 0
+// FILL: Fully executed, leaves_quantity = 0
+enum ExecType {
+  EXEC_TYPE_UNSPECIFIED = 0;   // Invalid default
+  PARTIAL_FILL = 1;
+  FILL = 2;
+}
+
+//=============================================================================
+// REQUEST MESSAGES (Python → C++)
+//=============================================================================
+
+// NewOrderRequest: Submit a new order to the matching engine
+//
+// IMPORTANT: All prices are fixed-point (price × 10000)
+// Example: $100.25 → 1002500
+// Why? Matches Python Decimal precision, avoids float precision loss
+//
+// VALIDATION RULES (enforced by C++):
+// - symbol: Non-empty, alphanumeric
+// - side: Must be BUY or SELL (not UNSPECIFIED)
+// - order_type: Must be LIMIT or MARKET
+// - price: Must be > 0 for LIMIT orders, ignored for MARKET orders
+// - quantity: Must be > 0
+// - client_timestamp: Unix microseconds (for latency tracking)
+message NewOrderRequest {
+  string symbol = 1;              // e.g., "AAPL", "SPY", "TSLA"
+  Side side = 2;                  // BUY or SELL
+  OrderType order_type = 3;       // LIMIT or MARKET
+  int64 price = 4;                // Fixed-point: $100.25 → 1002500 (0 for MARKET)
+  int32 quantity = 5;             // Must be positive integer
+  int64 client_timestamp = 6;     // Unix microseconds (for round-trip latency)
+}
+
+//=============================================================================
+// RESPONSE MESSAGES (C++ → Python)
+//=============================================================================
+
+// OrderResponse: Immediate acknowledgment of order submission
+//
+// WHEN SENT: Immediately after receiving NewOrderRequest (synchronous)
+// PURPOSE: Confirms order was accepted into queue OR rejected
+//
+// IMPORTANT: This does NOT report fills. Use ExecutionReport for that.
+//
+// STATUS VALUES:
+// - ACCEPTED: Order is valid and queued for matching (order_id assigned)
+// - REJECTED: Order failed validation (see reject_reason)
+//
+// LATENCY TARGET: <50 microseconds (validation + queue push + send ACK)
+message OrderResponse {
+  uint64 order_id = 1;            // Unique ID assigned by C++ (0 if REJECTED)
+  OrderStatus status = 2;         // ACCEPTED or REJECTED
+  string reject_reason = 3;       // Human-readable error (empty if ACCEPTED)
+  int64 server_timestamp = 4;     // Unix microseconds (for latency measurement)
+}
+
+// ExecutionReport: Fill notification (sent asynchronously after matching)
+//
+// WHEN SENT: After matching engine processes order (Thread B)
+// MULTIPLICITY: One report per fill event
+//
+// EXAMPLE SCENARIO:
+// - Aggressive BUY 150 @ $100.50 LIMIT
+// - Resting SELL 100 @ $100.25 (fills first)
+// - Resting SELL 50 @ $100.50 (fills second)
+// - Result: TWO ExecutionReport messages
+//   1. PARTIAL_FILL: fill_qty=100, fill_price=1002500, leaves_qty=50, cumulative_qty=100
+//   2. FILL: fill_qty=50, fill_price=1005000, leaves_qty=0, cumulative_qty=150
+//
+// FIELDS EXPLAINED:
+// - order_id: References original NewOrderRequest
+// - exec_type: PARTIAL_FILL or FILL (final)
+// - fill_quantity: Qty matched in THIS report
+// - fill_price: Price of THIS fill (fixed-point)
+// - leaves_quantity: Unfilled qty remaining (0 if FILL)
+// - cumulative_qty: Total filled so far across all reports
+// - timestamp: Unix microseconds
+//
+// AVERAGE PRICE CALCULATION (Python side):
+// weighted_avg = sum(fill_qty * fill_price) / cumulative_qty
+message ExecutionReport {
+  uint64 order_id = 1;            // References NewOrderRequest
+  ExecType exec_type = 2;         // PARTIAL_FILL or FILL
+  int32 fill_quantity = 3;        // Qty matched in this report
+  int64 fill_price = 4;           // Fixed-point price of this fill
+  int32 leaves_quantity = 5;      // Unfilled qty (0 if FILL)
+  int32 cumulative_qty = 6;       // Total filled across all reports
+  int64 timestamp = 7;            // Unix microseconds
+}
+
+// MarketDataUpdate: Top-of-book snapshot (broadcast on PUB socket)
+//
+// WHEN SENT: Whenever matching engine detects top-of-book change
+// SOCKET: ZeroMQ PUB (one-way broadcast)
+// SUBSCRIPTION: Python subscribes to specific symbols or all ("")
+//
+// USAGE:
+// - Python can track best bid/ask for realistic slippage simulation
+// - Enables "live" backtesting with order book state
+//
+// SPECIAL VALUES:
+// - best_bid_price = 0: No bids in book
+// - best_ask_price = 0: No asks in book
+//
+// EXAMPLE:
+// {
+//   symbol: "AAPL",
+//   best_bid_price: 1502500,  // $150.25
+//   best_bid_quantity: 500,
+//   best_ask_price: 1502700,  // $150.27
+//   best_ask_quantity: 300,
+//   timestamp: 1704067200000000  // Unix microseconds
+// }
+message MarketDataUpdate {
+  string symbol = 1;              // Symbol (same as orders)
+  int64 best_bid_price = 2;       // Fixed-point (0 if no bids)
+  int32 best_bid_quantity = 3;    // Total qty at best bid
+  int64 best_ask_price = 4;       // Fixed-point (0 if no asks)
+  int32 best_ask_quantity = 5;    // Total qty at best ask
+  int64 timestamp = 6;            // Unix microseconds
+}
+
+//=============================================================================
+// MESSAGE SIZE ESTIMATES (for performance analysis)
+//=============================================================================
+//
+// NewOrderRequest: ~50-80 bytes (depending on symbol length)
+// OrderResponse: ~30-50 bytes
+// ExecutionReport: ~40-60 bytes
+// MarketDataUpdate: ~50-70 bytes
+//
+// NETWORK OVERHEAD (ZeroMQ):
+// - Additional ~100 bytes per message (frames, routing)
+// - Total round-trip: ~300-500 bytes for order submission
+//
+// THROUGHPUT ESTIMATE:
+// - 1 Gbps link: ~300,000 orders/second (theoretical max)
+// - Realistic: ~100,000 orders/second (with matching engine latency)
+//
+//=============================================================================
+// FIXED-POINT ARITHMETIC HELPERS (for reference)
+//=============================================================================
+//
+// C++ CONVERSION:
+//   int64_t price_cents = static_cast<int64_t>(price_dollars * 10000);
+//   double price_dollars = static_cast<double>(price_cents) / 10000.0;
+//
+// PYTHON CONVERSION:
+//   from decimal import Decimal
+//   price_cents = int(Decimal(price_str) * 10000)
+//   price_decimal = Decimal(price_cents) / Decimal(10000)
+//
+// WHY 10000?
+// - Supports 4 decimal places (common for USD)
+// - Fits comfortably in int64 (max ~9 quadrillion cents)
+// - Fast integer arithmetic (no floating-point operations)
+//
+//=============================================================================
