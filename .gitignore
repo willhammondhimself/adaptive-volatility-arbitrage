@@ -133,6 +133,7 @@ cython_debug/
 # IDEs
 .idea/
 .vscode/
+.claude/
 *.swp
 *.swo
 *~
