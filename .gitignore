@@ -142,6 +142,10 @@ cython_debug/
 .DS_Store
 Thumbs.db
 
+# Node
+node_modules/
+frontend/node_modules/
+
 # Project specific
 data/raw/
 data/raw/*.csv
