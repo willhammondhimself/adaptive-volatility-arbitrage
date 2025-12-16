@@ -456,7 +456,7 @@ class VolatilityArbitrageStrategy(Strategy):
         # Position sizing with regime-aware multiplier
         base_quantity = 10
         quantity = int(base_quantity * float(position_multiplier))
-        quantity = max(1, quantity)  # Ensure at least 1 contract
+        quantity = max(10, quantity)  # Ensure at least 1 contract
 
         if self.current_regime is not None:
             reason += f" (regime {self.current_regime}, multiplier {position_multiplier:.2f})"
