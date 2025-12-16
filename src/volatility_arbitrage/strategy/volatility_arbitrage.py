@@ -290,6 +290,9 @@ class VolatilityArbitrageStrategy(Strategy):
                 symbol, option_chain, positions
             )
             signals.extend(rebalance_signals)
+           
+            print(f"DEBUG: Delta={net_delta}, HedgeQty={hedge_quantity}, Ratio={target_hedge_ratio}")
+
 
         return signals
 
@@ -454,7 +457,7 @@ class VolatilityArbitrageStrategy(Strategy):
             reason = f"Long volatility: IV {vol_spread.implied_vol:.1%} < RV {vol_spread.forecasted_vol:.1%}"
 
         # Position sizing with regime-aware multiplier
-        base_quantity = 1
+        base_quantity = 10
         quantity = int(base_quantity * float(position_multiplier))
         quantity = max(1, quantity)  # Ensure at least 1 contract
 
@@ -500,7 +503,10 @@ class VolatilityArbitrageStrategy(Strategy):
         net_delta = (call_greeks.delta + put_greeks.delta) * Decimal(quantity) * Decimal(position_multiplier)
 
         # Hedge to delta-neutral
-        hedge_quantity = int(-net_delta * 100)  # Assuming 100 multiplier for options
+        LONG_BIAS = Decimal("0.80")
+        target_hedge_ratio = Decimal("1.0") - LONG_BIAS 
+        
+        hedge_quantity = int(-net_delta * 100 * target_hedge_ratio)
 
         if hedge_quantity != 0:
             hedge_action = "buy" if hedge_quantity > 0 else "sell"

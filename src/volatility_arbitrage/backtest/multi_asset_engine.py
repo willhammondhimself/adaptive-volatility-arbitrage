@@ -554,7 +554,13 @@ class MultiAssetBacktestEngine(BacktestEngine):
                 last_update=multi_pos.last_update,
             )
 
-        signals = self.strategy.generate_signals(timestamp, day_data, base_positions)
+        signals = self.strategy.generate_signals(
+            timestamp=timestamp,
+            market_data=day_data,
+            positions=base_positions,
+            cash=self.cash,
+            portfolio_greeks=greeks,
+        )
 
         # Execute trades based on signals
         for signal in signals:

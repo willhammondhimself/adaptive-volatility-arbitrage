@@ -1,7 +1,7 @@
 """
 Adaptive Volatility Arbitrage Backtesting Engine
 
-A production-grade quantitative finance system for backtesting volatility arbitrage strategies.
+Quantitative finance backtesting system for volatility arbitrage strategies.
 """
 
 __version__ = "0.1.0"

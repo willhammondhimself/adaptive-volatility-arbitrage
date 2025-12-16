@@ -7,12 +7,11 @@ Defines the contract that all trading strategies must implement.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Literal
+from typing import Literal, Any
 
 import pandas as pd
 
 from volatility_arbitrage.core.types import Position
-
 
 @dataclass(frozen=True)
 class Signal:
@@ -34,7 +33,6 @@ class Signal:
         if self.action not in ["buy", "sell"]:
             raise ValueError("Action must be 'buy' or 'sell'")
 
-
 class Strategy(ABC):
     """
     Abstract base class for trading strategies.
@@ -49,6 +47,9 @@ class Strategy(ABC):
         timestamp: datetime,
         market_data: pd.DataFrame,
         positions: dict[str, Position],
+        # --- ADDED: Optional args for advanced strategies ---
+        cash: float = 0.0,
+        portfolio_greeks: Any = None,
     ) -> list[Signal]:
         """
         Generate trading signals for the current time step.
@@ -57,22 +58,11 @@ class Strategy(ABC):
             timestamp: Current timestamp
             market_data: Current market data (may include multiple symbols)
             positions: Current open positions
+            cash: Current available cash (optional, defaults to 0.0)
+            portfolio_greeks: Current portfolio greeks (optional, defaults to None)
 
         Returns:
             List of trading signals to execute
-
-        Example:
-            >>> def generate_signals(self, timestamp, market_data, positions):
-            ...     signals = []
-            ...     for symbol in market_data['symbol'].unique():
-            ...         if should_buy(symbol):
-            ...             signals.append(Signal(
-            ...                 symbol=symbol,
-            ...                 action='buy',
-            ...                 quantity=100,
-            ...                 reason='Entry signal'
-            ...             ))
-            ...     return signals
         """
         pass
 
@@ -114,7 +104,6 @@ class Strategy(ABC):
         """
         pass
 
-
 class BuyAndHoldStrategy(Strategy):
     """
     Simple buy-and-hold strategy for testing.
@@ -139,6 +128,9 @@ class BuyAndHoldStrategy(Strategy):
         timestamp: datetime,
         market_data: pd.DataFrame,
         positions: dict[str, Position],
+        # --- ADDED: Matching signature (ignored in this simple strategy) ---
+        cash: float = 0.0,
+        portfolio_greeks: Any = None,
     ) -> list[Signal]:
         """Generate signals: buy once on first day."""
         if not self.has_bought and self.symbol not in positions:
