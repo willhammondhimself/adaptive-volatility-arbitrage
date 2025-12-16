@@ -158,3 +158,7 @@ logs/*.log
 *.parquet
 *.h5
 *.hdf5
+frontend/node_modules/
+node_modules/
+__pycache__/
+*.pyc

@@ -290,9 +290,6 @@ class VolatilityArbitrageStrategy(Strategy):
                 symbol, option_chain, positions
             )
             signals.extend(rebalance_signals)
-           
-            print(f"DEBUG: Delta={net_delta}, HedgeQty={hedge_quantity}, Ratio={target_hedge_ratio}")
-
 
         return signals
 
