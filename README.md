@@ -1,6 +1,6 @@
 # Adaptive Volatility Arbitrage Trading System
 
-**Production-grade quantitative finance platform** for options pricing, volatility arbitrage, and interactive market analysis.
+**Quantitative finance platform** for options pricing, volatility arbitrage, and interactive market analysis.
 
 [![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.108+-green.svg)](https://fastapi.tiangolo.com/)
