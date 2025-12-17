@@ -295,6 +295,55 @@ class TestHestonCalibrator:
         assert abs(float(calibrated_params.v0) - 0.04) < 0.02
         assert abs(float(calibrated_params.theta) - 0.04) < 0.02
 
+    def test_invalid_rho_bounds_rejected(self):
+        """Ensure calibrator rejects invalid rho bounds."""
+        with pytest.raises(ValueError, match="rho bounds must be within"):
+            HestonCalibrator(
+                bounds={
+                    "v0": (0.001, 1.0),
+                    "theta": (0.001, 1.0),
+                    "kappa": (0.001, 10.0),
+                    "xi": (0.001, 2.0),
+                    "rho": (1.1, 2.0),  # Invalid: > 1
+                }
+            )
+
+    def test_nan_bounds_rejected(self):
+        """Ensure calibrator rejects NaN bounds."""
+        with pytest.raises(ValueError, match="non-finite values"):
+            HestonCalibrator(
+                bounds={
+                    "v0": (float("nan"), 1.0),  # Invalid: NaN
+                    "theta": (0.001, 1.0),
+                    "kappa": (0.001, 10.0),
+                    "xi": (0.001, 2.0),
+                    "rho": (-0.99, 0.99),
+                }
+            )
+
+    def test_missing_bounds_rejected(self):
+        """Ensure calibrator rejects incomplete bounds."""
+        with pytest.raises(ValueError, match="Missing bounds for parameter"):
+            HestonCalibrator(
+                bounds={
+                    "v0": (0.001, 1.0),
+                    # Missing theta, kappa, xi, rho
+                }
+            )
+
+    def test_inverted_bounds_rejected(self):
+        """Ensure calibrator rejects bounds where lower >= upper."""
+        with pytest.raises(ValueError, match="lower.*>= upper"):
+            HestonCalibrator(
+                bounds={
+                    "v0": (1.0, 0.001),  # Invalid: lower > upper
+                    "theta": (0.001, 1.0),
+                    "kappa": (0.001, 10.0),
+                    "xi": (0.001, 2.0),
+                    "rho": (-0.99, 0.99),
+                }
+            )
+
 
 @pytest.mark.unit
 class TestComparisonUtilities:

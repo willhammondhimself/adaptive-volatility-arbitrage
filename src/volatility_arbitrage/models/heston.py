@@ -311,6 +311,36 @@ class HestonCalibrator:
             "rho": (-0.99, 0.99),  # Correlation
         }
 
+        # Validate bounds
+        self._validate_bounds()
+
+    def _validate_bounds(self) -> None:
+        """Validate parameter bounds are valid."""
+        required_params = ["v0", "theta", "kappa", "xi", "rho"]
+
+        for param in required_params:
+            if param not in self.bounds:
+                raise ValueError(f"Missing bounds for parameter: {param}")
+
+            lower, upper = self.bounds[param]
+
+            if not (np.isfinite(lower) and np.isfinite(upper)):
+                raise ValueError(
+                    f"Bounds for {param} contain non-finite values: ({lower}, {upper})"
+                )
+
+            if lower >= upper:
+                raise ValueError(
+                    f"Invalid bounds for {param}: lower ({lower}) >= upper ({upper})"
+                )
+
+        # Special validation for rho bounds
+        rho_lower, rho_upper = self.bounds["rho"]
+        if rho_lower < -1 or rho_upper > 1:
+            raise ValueError(
+                f"rho bounds must be within [-1, 1], got ({rho_lower}, {rho_upper})"
+            )
+
     def calibrate(
         self,
         S: Decimal,
@@ -356,6 +386,16 @@ class HestonCalibrator:
         def objective(params: np.ndarray) -> float:
             """Objective function to minimize."""
             try:
+                # Early validation: check for NaN/Inf values
+                if not np.all(np.isfinite(params)):
+                    logger.debug(f"Non-finite parameters encountered: {params}")
+                    return 1e10  # Large penalty
+
+                # Validate rho bounds explicitly before Decimal conversion
+                if not (-1 <= params[4] <= 1):
+                    logger.debug(f"Invalid rho value: {params[4]}")
+                    return 1e10  # Large penalty
+
                 # Create Heston parameters
                 heston_params = HestonParameters(
                     v0=Decimal(str(params[0])),
