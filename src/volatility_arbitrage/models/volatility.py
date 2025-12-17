@@ -248,11 +248,17 @@ class GARCHVolatility(VolatilityForecaster):
         # Estimate parameters
         omega, alpha, beta = self._estimate_params(returns)
 
-        # Calculate current variance
-        current_variance = np.var(returns)
-        last_return_sq = returns.iloc[-1] ** 2
+        # Calculate current variance using data available at decision time
+        # IMPORTANT: Exclude today's return to avoid look-ahead bias
+        # We can only use returns through yesterday when making today's forecast
+        if len(returns) < 2:
+            logger.warning("Insufficient returns for proper GARCH forecast")
+            return Decimal(str(np.std(returns) * np.sqrt(252)))
 
-        # One-step-ahead forecast
+        current_variance = np.var(returns[:-1])  # Exclude today's return
+        last_return_sq = returns.iloc[-2] ** 2   # Use yesterday's return
+
+        # One-step-ahead forecast (now properly forward-looking)
         forecast_variance = omega + alpha * last_return_sq + beta * current_variance
 
         # Multi-step forecast (simplified persistence model)

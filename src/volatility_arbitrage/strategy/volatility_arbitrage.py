@@ -664,7 +664,8 @@ class VolatilityArbitrageStrategy(Strategy):
         position_multiplier = 1 if action == "buy" else -1
         net_delta = (call_greeks.delta + put_greeks.delta) * Decimal(quantity) * Decimal(position_multiplier)
 
-        TARGET_DELTA_PER_CONTRACT = Decimal("0.20") 
+        # Delta-neutral hedge (was 0.20 which introduced long bias)
+        TARGET_DELTA_PER_CONTRACT = Decimal("0.0") 
         
         target_shares = int(Decimal(quantity) * 100 * TARGET_DELTA_PER_CONTRACT)
         
@@ -1103,17 +1104,23 @@ class VolatilityArbitrageStrategy(Strategy):
         """
         Calculate 20-day realized volatility from price history.
 
+        IMPORTANT: Uses lagged data to avoid look-ahead bias.
+        When making trading decisions at time T, we can only use
+        returns through T-1 (today's return isn't known yet).
+
         Args:
             symbol: Underlying symbol
 
         Returns:
             Annualized realized volatility (stdev of log returns)
         """
-        if symbol not in self.price_history or len(self.price_history[symbol]) < 21:
+        # Need 22 prices: 21 for lagged calculation + 1 for today (excluded)
+        if symbol not in self.price_history or len(self.price_history[symbol]) < 22:
             return Decimal("0.20")  # Default 20% vol
 
-        # Get last 21 prices (for 20 returns)
-        prices = self.price_history[symbol].tail(21)
+        # Get last 22 prices, then exclude today (last price) to avoid look-ahead bias
+        # This gives us 21 prices through yesterday, yielding 20 returns
+        prices = self.price_history[symbol].tail(22).iloc[:-1]  # Exclude today
         returns = calculate_returns(prices, method="log")
 
         if len(returns) < 20:

@@ -174,3 +174,7 @@ frontend/node_modules/
 node_modules/
 __pycache__/
 *.pyc
+
+# SPY Options data (too large for git)
+src/volatility_arbitrage/data/SPY_Options_2019_24/
+**/SPY_Options_*/

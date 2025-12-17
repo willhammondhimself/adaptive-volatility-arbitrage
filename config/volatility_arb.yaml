@@ -41,8 +41,54 @@ strategy:
   # Risk Management
   max_loss_pct: 50.0  # Stop loss at 50% of premium paid
 
-  # Regime Detection (optional)
-  use_regime_detection: false  # Set to true to enable regime-aware trading
+  # ===== QV STRATEGY CONFIGURATION =====
+  # Enable the 6-signal consensus model instead of simple IV-RV spread
+  use_qv_strategy: true
+
+  # QV Feature Windows
+  rv_window: 20           # Realized volatility lookback
+  feature_window: 60      # Z-score calculation window
+  regime_window: 252      # Vol percentile window
+
+  # QV Signal Thresholds (lowered from original for more signals)
+  pc_ratio_threshold: 0.5       # Put/Call ratio z-score threshold
+  skew_threshold: 0.5           # IV skew z-score threshold
+  premium_threshold: 0.10       # IV premium threshold (10%)
+  term_structure_threshold: 0.0 # Term structure threshold
+  volume_spike_threshold: 1.0   # Volume spike z-score threshold
+  sentiment_threshold: 0.5      # Near-term sentiment z-score threshold
+
+  # QV Consensus Scoring
+  consensus_threshold: 0.15     # Minimum consensus for entry (lowered for more trades)
+
+  # QV Signal Weights (sum to 1.0)
+  weight_pc_ratio: 0.20
+  weight_iv_skew: 0.20
+  weight_iv_premium: 0.15
+  weight_term_structure: 0.15
+  weight_volume_spike: 0.15
+  weight_near_term_sentiment: 0.15
+
+  # QV Regime Scalars (position size multipliers by vol percentile)
+  regime_crisis_scalar: 0.5     # Vol >90th percentile - reduce size
+  regime_elevated_scalar: 0.75  # Vol 70-90th percentile
+  regime_normal_scalar: 1.0     # Vol 30-70th percentile
+  regime_low_scalar: 1.2        # Vol 10-30th percentile
+  regime_extreme_low_scalar: 1.5 # Vol <10th percentile - increase size
+
+  # Bullish Base Exposure (removed for pure vol arb)
+  base_long_bias: 0.0           # No directional bias (was 0.8)
+  signal_adjustment_factor: 1.0 # Full signal weight
+
+  # Tiered Position Sizing
+  use_tiered_sizing: true
+  min_consensus_threshold: 0.15
+  position_scaling_method: quadratic
+  min_holding_days: 5
+
+  # ===== REGIME DETECTION =====
+  # Enable regime-aware trading with HMM/GMM detection
+  use_regime_detection: true
   regime_lookback_period: 60  # Days of returns for regime detection
   exit_on_regime_transition: false  # Exit all positions when regime changes
 

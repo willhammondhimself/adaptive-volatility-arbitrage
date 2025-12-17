@@ -725,7 +725,21 @@ class MultiAssetBacktestEngine(BacktestEngine):
         for signal in signals:
             self._execute_signal(signal, timestamp, day_data)
 
-        # Record equity and margin
+        # Deduct daily carrying costs
+        # 1. Margin financing on short option margin (daily rate = annual / 252)
+        daily_margin_rate = self.config.margin_rate / Decimal("252") if hasattr(self.config, 'margin_rate') else Decimal("0.05") / Decimal("252")
+        margin_financing_cost = self.margin_used * daily_margin_rate
+        self.cash -= margin_financing_cost
+
+        # 2. Daily delta hedge rebalancing cost (applied to notional exposure)
+        daily_hedge_cost_rate = self.config.daily_hedge_cost if hasattr(self.config, 'daily_hedge_cost') else Decimal("0.0002")
+        portfolio_delta = self._calculate_portfolio_greeks().delta
+        # Hedge cost proportional to delta exposure (approximate notional)
+        hedge_notional = abs(portfolio_delta) * Decimal("100")  # Delta * 100 shares per contract
+        daily_hedge_cost = hedge_notional * daily_hedge_cost_rate
+        self.cash -= daily_hedge_cost
+
+        # Record equity and margin (after costs)
         equity = self._calculate_multi_equity(day_data)
         buying_power = self._get_available_buying_power()
 

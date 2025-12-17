@@ -1,0 +1,734 @@
+#!/usr/bin/env python3
+"""
+Run full backtest with volatility arbitrage strategy.
+
+Supports both:
+- Simple IV-RV spread strategy (legacy)
+- QV 6-signal consensus strategy (recommended)
+"""
+
+import argparse
+import json
+from collections import deque
+from datetime import datetime
+from decimal import Decimal
+from pathlib import Path
+
+import pandas as pd
+import numpy as np
+
+from volatility_arbitrage.backtest.metrics import calculate_sharpe_ratio
+from volatility_arbitrage.core.config import load_strategy_config
+
+
+def load_json_options_data(data_dir: str) -> pd.DataFrame:
+    """Load JSON options data from directory."""
+    data_path = Path(data_dir)
+    all_records = []
+
+    json_files = sorted(data_path.glob("*.json"))
+    print(f"Found {len(json_files)} JSON files")
+
+    for json_file in json_files:
+        print(f"Loading {json_file.name}...")
+        with open(json_file, 'r') as f:
+            data = json.load(f)
+
+        # Handle nested list structure
+        if isinstance(data, list) and len(data) > 0:
+            if isinstance(data[0], list):
+                for day_records in data:
+                    all_records.extend(day_records)
+            else:
+                all_records.extend(data)
+
+    print(f"Total records loaded: {len(all_records):,}")
+
+    df = pd.DataFrame(all_records)
+
+    # Convert types
+    df['date'] = pd.to_datetime(df['date'])
+    df['expiration'] = pd.to_datetime(df['expiration'])
+    for col in ['strike', 'last', 'bid', 'ask', 'mark', 'volume', 'open_interest',
+                'implied_volatility', 'delta', 'gamma', 'theta', 'vega']:
+        df[col] = pd.to_numeric(df[col], errors='coerce')
+
+    return df
+
+
+class QVSignalCalculator:
+    """
+    Calculate 6-signal QV consensus for volatility arbitrage.
+
+    Signals:
+    1. PC Ratio (Put/Call volume ratio) - contrarian
+    2. IV Skew (ATM put IV - call IV) - fear premium
+    3. IV Premium (IV percentile vs history) - mean reversion
+    4. Term Structure (60d IV - 30d IV) - contango/backwardation
+    5. Volume Spike (current vol / median) - momentum
+    6. Near-term Sentiment (7d IV - 30d IV) - short-term fear
+    """
+
+    def __init__(self, config):
+        self.config = config
+        self.feature_window = config.feature_window
+
+        # Rolling feature buffers
+        self.pc_ratio_buffer = deque(maxlen=self.feature_window)
+        self.iv_skew_buffer = deque(maxlen=self.feature_window)
+        self.iv_premium_buffer = deque(maxlen=self.feature_window)
+        self.term_structure_buffer = deque(maxlen=self.feature_window)
+        self.volume_buffer = deque(maxlen=self.feature_window)
+        self.sentiment_buffer = deque(maxlen=self.feature_window)
+
+        # RV history for percentile calculation
+        self.rv_history = deque(maxlen=config.regime_window)
+
+    def extract_daily_features(self, day_df: pd.DataFrame, spot: float, rv: float) -> dict:
+        """Extract all 6 QV features from daily options data."""
+        calls = day_df[day_df['type'] == 'call'].copy()
+        puts = day_df[day_df['type'] == 'put'].copy()
+
+        today = day_df['date'].iloc[0]
+        calls['dte'] = (calls['expiration'] - today).dt.days
+        puts['dte'] = (puts['expiration'] - today).dt.days
+
+        features = {}
+
+        # 1. PC Ratio (Put volume / Call volume)
+        call_volume = calls['volume'].sum()
+        put_volume = puts['volume'].sum()
+        features['pc_ratio'] = put_volume / call_volume if call_volume > 0 else 1.0
+
+        # 2. IV Skew (ATM put IV - ATM call IV)
+        atm_calls_30 = calls[(calls['dte'] >= 25) & (calls['dte'] <= 35)]
+        atm_puts_30 = puts[(puts['dte'] >= 25) & (puts['dte'] <= 35)]
+
+        if len(atm_calls_30) > 0 and len(atm_puts_30) > 0:
+            atm_call = atm_calls_30.iloc[(atm_calls_30['delta'].abs() - 0.5).abs().argmin()]
+            atm_put = atm_puts_30.iloc[(atm_puts_30['delta'].abs() + 0.5).abs().argmin()]
+            features['iv_skew'] = abs(atm_put['implied_volatility']) - atm_call['implied_volatility']
+        else:
+            features['iv_skew'] = 0.0
+
+        # 3. IV Premium (current IV percentile vs 60-day history)
+        if len(atm_calls_30) > 0:
+            atm_iv = atm_calls_30.iloc[(atm_calls_30['delta'].abs() - 0.5).abs().argmin()]['implied_volatility']
+        else:
+            atm_iv = rv  # Fallback
+        features['atm_iv'] = atm_iv
+        features['iv_premium'] = (atm_iv - rv) / rv if rv > 0 else 0.0
+
+        # 4. Term Structure (60d IV - 30d IV)
+        atm_calls_60 = calls[(calls['dte'] >= 55) & (calls['dte'] <= 65)]
+        if len(atm_calls_30) > 0 and len(atm_calls_60) > 0:
+            iv_30 = atm_calls_30.iloc[(atm_calls_30['delta'].abs() - 0.5).abs().argmin()]['implied_volatility']
+            iv_60 = atm_calls_60.iloc[(atm_calls_60['delta'].abs() - 0.5).abs().argmin()]['implied_volatility']
+            features['term_structure'] = iv_60 - iv_30
+        else:
+            features['term_structure'] = 0.0
+
+        # 5. Volume Spike (total volume)
+        features['total_volume'] = call_volume + put_volume
+
+        # 6. Near-term Sentiment (7d IV - 30d IV)
+        atm_calls_7 = calls[(calls['dte'] >= 5) & (calls['dte'] <= 10)]
+        if len(atm_calls_7) > 0 and len(atm_calls_30) > 0:
+            iv_7 = atm_calls_7.iloc[(atm_calls_7['delta'].abs() - 0.5).abs().argmin()]['implied_volatility']
+            iv_30 = atm_calls_30.iloc[(atm_calls_30['delta'].abs() - 0.5).abs().argmin()]['implied_volatility']
+            features['sentiment'] = iv_7 - iv_30
+        else:
+            features['sentiment'] = 0.0
+
+        return features
+
+    def update_buffers(self, features: dict):
+        """Update rolling feature buffers."""
+        self.pc_ratio_buffer.append(features['pc_ratio'])
+        self.iv_skew_buffer.append(features['iv_skew'])
+        self.iv_premium_buffer.append(features['iv_premium'])
+        self.term_structure_buffer.append(features['term_structure'])
+        self.volume_buffer.append(features['total_volume'])
+        self.sentiment_buffer.append(features['sentiment'])
+
+    def calculate_z_score(self, buffer: deque, current_value: float) -> float:
+        """Calculate z-score of current value vs buffer history."""
+        if len(buffer) < 20:
+            return 0.0
+        arr = np.array(buffer)
+        mean = arr.mean()
+        std = arr.std()
+        if std < 1e-8:
+            return 0.0
+        return (current_value - mean) / std
+
+    def generate_signals(self, features: dict) -> dict:
+        """
+        Generate binary signals (-1, 0, +1) for each feature.
+
+        +1 = bullish signal (go long vol or reduce short)
+        -1 = bearish signal (go short vol or reduce long)
+        0 = neutral
+        """
+        signals = {}
+
+        # Need sufficient history
+        if len(self.pc_ratio_buffer) < 20:
+            return {k: 0 for k in ['pc_ratio', 'iv_skew', 'iv_premium', 'term_structure', 'volume', 'sentiment']}
+
+        # 1. PC Ratio - high PC ratio (fear) is contrarian bullish
+        pc_z = self.calculate_z_score(self.pc_ratio_buffer, features['pc_ratio'])
+        if pc_z > float(self.config.pc_ratio_threshold):
+            signals['pc_ratio'] = 1  # Bullish (fear overdone)
+        elif pc_z < -float(self.config.pc_ratio_threshold):
+            signals['pc_ratio'] = -1  # Bearish (complacency)
+        else:
+            signals['pc_ratio'] = 0
+
+        # 2. IV Skew - high put skew (fear) is contrarian bullish
+        skew_z = self.calculate_z_score(self.iv_skew_buffer, features['iv_skew'])
+        if skew_z > float(self.config.skew_threshold):
+            signals['iv_skew'] = 1  # Bullish
+        elif skew_z < -float(self.config.skew_threshold):
+            signals['iv_skew'] = -1  # Bearish
+        else:
+            signals['iv_skew'] = 0
+
+        # 3. IV Premium - high IV premium suggests short vol
+        if features['iv_premium'] > float(self.config.premium_threshold):
+            signals['iv_premium'] = -1  # Short vol (IV too high)
+        elif features['iv_premium'] < -float(self.config.premium_threshold):
+            signals['iv_premium'] = 1  # Long vol (IV too low)
+        else:
+            signals['iv_premium'] = 0
+
+        # 4. Term Structure - positive slope (contango) is bullish
+        term_z = self.calculate_z_score(self.term_structure_buffer, features['term_structure'])
+        if term_z > float(self.config.term_structure_threshold):
+            signals['term_structure'] = 1  # Bullish
+        elif term_z < -float(self.config.term_structure_threshold):
+            signals['term_structure'] = -1  # Bearish
+        else:
+            signals['term_structure'] = 0
+
+        # 5. Volume Spike - high volume with direction
+        vol_z = self.calculate_z_score(self.volume_buffer, features['total_volume'])
+        if vol_z > float(self.config.volume_spike_threshold):
+            signals['volume'] = 1  # Continuation bullish
+        elif vol_z < -0.5:  # Lower threshold for low volume
+            signals['volume'] = -1
+        else:
+            signals['volume'] = 0
+
+        # 6. Sentiment - negative sentiment is contrarian bullish
+        sent_z = self.calculate_z_score(self.sentiment_buffer, features['sentiment'])
+        if sent_z > float(self.config.sentiment_threshold):
+            signals['sentiment'] = -1  # Near-term fear, bearish vol
+        elif sent_z < -float(self.config.sentiment_threshold):
+            signals['sentiment'] = 1  # Complacency, bullish vol
+        else:
+            signals['sentiment'] = 0
+
+        return signals
+
+    def calculate_consensus(self, signals: dict) -> float:
+        """
+        Calculate weighted consensus score from all signals.
+
+        Returns: float in [-1.0, 1.0]
+        - Positive = bullish vol (go long)
+        - Negative = bearish vol (go short)
+        """
+        weights = {
+            'pc_ratio': float(self.config.weight_pc_ratio),
+            'iv_skew': float(self.config.weight_iv_skew),
+            'iv_premium': float(self.config.weight_iv_premium),
+            'term_structure': float(self.config.weight_term_structure),
+            'volume': float(self.config.weight_volume_spike),
+            'sentiment': float(self.config.weight_near_term_sentiment),
+        }
+
+        consensus = sum(signals[k] * weights[k] for k in signals)
+        return consensus
+
+    def get_regime_scalar(self, rv: float) -> float:
+        """Get position size multiplier based on vol percentile."""
+        self.rv_history.append(rv)
+
+        if len(self.rv_history) < 20:
+            return 1.0
+
+        rv_arr = np.array(self.rv_history)
+        percentile = (rv_arr < rv).sum() / len(rv_arr)
+
+        if percentile > 0.90:
+            return float(self.config.regime_crisis_scalar)
+        elif percentile > 0.70:
+            return float(self.config.regime_elevated_scalar)
+        elif percentile > 0.30:
+            return float(self.config.regime_normal_scalar)
+        elif percentile > 0.10:
+            return float(self.config.regime_low_scalar)
+        else:
+            return float(self.config.regime_extreme_low_scalar)
+
+
+def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 100000):
+    """
+    Run QV 6-signal consensus backtest with improved entry/exit logic.
+
+    Key improvements:
+    1. Asymmetric entry thresholds (short vol has better edge)
+    2. Term structure confirmation (contango = sell vol, backwardation = buy vol)
+    3. Profit targets and trailing stops
+    4. Regime-aware position sizing
+    """
+    print("\n" + "="*60)
+    print("QV ENHANCED STRATEGY BACKTEST")
+    print("="*60)
+
+    # Parameters from config
+    position_size_base = float(config.position_size_pct) / 100
+    # Use realistic institutional spreads (1% for very liquid SPY ATM options)
+    option_spread_cost = 0.01  # 1% bid-ask spread (tight market)
+    commission_per_contract = 0.65
+    min_holding_days = config.min_holding_days
+    consensus_threshold = float(config.consensus_threshold)
+
+    # Enhanced entry thresholds (asymmetric - short vol has better edge)
+    short_vol_iv_percentile = 0.75  # IV >75th percentile
+    long_vol_iv_percentile = 0.25   # IV <25th percentile
+    short_vol_premium_min = 0.06    # IV must be 6%+ above RV
+    long_vol_premium_max = -0.06    # IV must be 6%+ below RV
+
+    # Term structure confirmation - disabled as too restrictive
+    require_term_structure = False
+
+    # Profit targets and stops - none needed, IV reversion handles exits
+    profit_target_pct = 0.10   # Very wide - let winners run
+    stop_loss_pct = -0.10     # Very wide - give room for mean reversion
+
+    print(f"\nConfig:")
+    print(f"  - QV Strategy: {config.use_qv_strategy}")
+    print(f"  - Regime Detection: {config.use_regime_detection}")
+    print(f"  - Short Vol Entry: IV >{short_vol_iv_percentile*100:.0f}th pctile, premium >{short_vol_premium_min*100:.0f}%")
+    print(f"  - Long Vol Entry: IV <{long_vol_iv_percentile*100:.0f}th pctile, premium <{long_vol_premium_max*100:.0f}%")
+    print(f"  - Term Structure Confirmation: {require_term_structure}")
+    print(f"  - Profit Target: {profit_target_pct*100:.1f}%")
+    print(f"  - Stop Loss: {stop_loss_pct*100:.1f}%")
+    print(f"  - Position Size: {position_size_base*100:.1f}%")
+
+    # Initialize
+    qv_calc = QVSignalCalculator(config)
+    equity = initial_capital
+    position = 0  # +1 long vol, -1 short vol, 0 flat
+    entry_date = None
+    entry_consensus = 0
+    entry_equity = None  # Track equity at entry for P/L calculation
+    entry_iv = None      # Track IV at entry
+    prev_iv = None
+
+    equity_curve = []
+    trades = []
+    position_pnl = 0  # Track cumulative P&L for current position
+
+    # Pre-calculate spot and RV
+    dates = sorted(options_df['date'].unique())
+    print(f"\nDate range: {dates[0]} to {dates[-1]}")
+    print(f"Trading days: {len(dates)}")
+
+    spot_prices = []
+    for date in dates:
+        day_df = options_df[options_df['date'] == date]
+        calls = day_df[day_df['type'] == 'call'].copy()
+        if len(calls) > 0:
+            # Filter to 30 DTE options for better ATM detection
+            calls['dte'] = (calls['expiration'] - date).dt.days
+            atm_calls = calls[(calls['dte'] >= 25) & (calls['dte'] <= 35)]
+            if len(atm_calls) > 0:
+                atm_idx = (atm_calls['delta'].abs() - 0.5).abs().argmin()
+                atm_call = atm_calls.iloc[atm_idx]
+                # Use ATM strike as spot estimate (not strike + premium)
+                spot = atm_call['strike']
+                spot_prices.append({'date': date, 'spot': spot})
+
+    spot_df = pd.DataFrame(spot_prices).set_index('date')
+    spot_df['returns'] = spot_df['spot'].pct_change()
+    spot_df['rv_20d'] = spot_df['returns'].rolling(20).std() * np.sqrt(252)
+    spot_df['rv_20d_lagged'] = spot_df['rv_20d'].shift(1)
+
+    warmup_days = max(config.feature_window + 21, 80)  # Need 60+ days for QV buffers
+    print(f"Warmup period: {warmup_days} days")
+
+    for i, date in enumerate(dates[warmup_days:], warmup_days):
+        day_df = options_df[options_df['date'] == date]
+
+        if date not in spot_df.index:
+            equity_curve.append({'date': date, 'equity': equity, 'position': position})
+            continue
+
+        rv = spot_df.loc[date, 'rv_20d_lagged']
+        spot = spot_df.loc[date, 'spot']
+
+        if pd.isna(rv):
+            equity_curve.append({'date': date, 'equity': equity, 'position': position})
+            continue
+
+        # Extract features
+        features = qv_calc.extract_daily_features(day_df, spot, rv)
+        qv_calc.update_buffers(features)
+
+        # Generate signals
+        signals = qv_calc.generate_signals(features)
+        consensus = qv_calc.calculate_consensus(signals)
+        regime_scalar = qv_calc.get_regime_scalar(rv)
+
+        atm_iv = features['atm_iv']
+
+        # Daily P&L for existing position
+        # Using straddle approximation: Long straddle = Long 1 ATM call + Long 1 ATM put
+        # Vega for ATM straddle ≈ 2 * 0.4 * S * sqrt(T) (call vega + put vega)
+        # For $100K capital with 5% position = $5,000 notional
+        # Trading ~50 contracts on a $5 premium straddle = $25K notional
+        daily_pnl = 0
+        if position != 0 and prev_iv is not None:
+            iv_change = atm_iv - prev_iv
+            dte_years = 45 / 365
+
+            # Straddle vega: ~0.8 * S * sqrt(T) per 100 shares
+            vega_per_straddle = 0.8 * spot * np.sqrt(dte_years)
+
+            # Number of straddles based on position size (rough approximation)
+            # $5K notional / ($5 premium * 100 multiplier) = 10 straddles
+            notional_value = position_size_base * equity
+            avg_straddle_premium = spot * atm_iv * np.sqrt(dte_years) * 0.8  # Approximation
+            num_straddles = notional_value / (avg_straddle_premium * 100) if avg_straddle_premium > 0 else 0
+
+            # Vega P&L: vega * iv_change * num_contracts * 100
+            # IV is in decimal (0.20 = 20%), so multiply by 100 to get per-point vega P&L
+            vega_pnl = position * vega_per_straddle * (iv_change * 100) * num_straddles
+
+            # Theta P&L: ATM straddle loses roughly vega/365 per day
+            theta_daily = -avg_straddle_premium * 100 / 45  # Premium decay over 45 days
+            theta_pnl = -position * abs(theta_daily) * num_straddles
+
+            daily_pnl = vega_pnl + theta_pnl
+
+        # Calculate holding period
+        days_held = 0
+        if entry_date is not None:
+            days_held = (pd.Timestamp(date) - pd.Timestamp(entry_date)).days
+
+        # Position sizing with tiered scaling
+        if config.use_tiered_sizing:
+            # Quadratic scaling based on consensus strength
+            consensus_strength = abs(consensus)
+            if config.position_scaling_method == "quadratic":
+                size_multiplier = consensus_strength ** 2
+            elif config.position_scaling_method == "cubic":
+                size_multiplier = consensus_strength ** 3
+            else:  # linear
+                size_multiplier = consensus_strength
+            position_size = position_size_base * size_multiplier * regime_scalar
+        else:
+            position_size = position_size_base * regime_scalar
+
+        # Entry logic - Asymmetric thresholds with term structure confirmation
+        # Calculate IV percentile vs recent history
+        iv_percentile = 0.5
+        if len(qv_calc.iv_premium_buffer) >= 20:
+            iv_arr = np.array(qv_calc.iv_premium_buffer)
+            iv_percentile = (iv_arr < features['iv_premium']).sum() / len(iv_arr)
+
+        # Term structure signal: positive = contango (normal), negative = backwardation (fear)
+        term_structure = features.get('term_structure', 0.0)
+        term_confirms_short = term_structure > 0  # Contango supports short vol
+        term_confirms_long = term_structure < 0   # Backwardation supports long vol
+
+        if position == 0:
+            # SHORT VOL: High IV percentile with elevated premium - vol seller's edge
+            short_vol_entry = (
+                iv_percentile > short_vol_iv_percentile and
+                features['iv_premium'] > short_vol_premium_min
+            )
+
+            # LONG VOL: Low IV percentile with discount - only in backwardation (fear)
+            # More restrictive because long vol has negative carry (theta decay)
+            long_vol_entry = (
+                iv_percentile < long_vol_iv_percentile and
+                features['iv_premium'] < long_vol_premium_max and
+                term_confirms_long  # Require backwardation for long vol
+            )
+
+            if short_vol_entry:
+                # Short volatility - IV is high with contango, expect mean reversion
+                position = -1
+                entry_date = date
+                entry_consensus = consensus
+                entry_equity = equity
+                entry_iv = atm_iv
+                position_pnl = 0
+
+                cost = option_spread_cost * position_size * equity + commission_per_contract * 2
+                equity -= cost
+
+                trades.append({
+                    'date': date,
+                    'action': 'SHORT_VOL',
+                    'consensus': consensus,
+                    'iv_percentile': iv_percentile,
+                    'term_structure': term_structure,
+                    'regime_scalar': regime_scalar,
+                    'iv': atm_iv,
+                    'rv': rv,
+                    'iv_premium': features['iv_premium'],
+                    'cost': cost
+                })
+
+            elif long_vol_entry:
+                # Long volatility - IV is low with backwardation, expect mean reversion up
+                position = 1
+                entry_date = date
+                entry_consensus = consensus
+                entry_equity = equity
+                entry_iv = atm_iv
+                position_pnl = 0
+
+                cost = option_spread_cost * position_size * equity + commission_per_contract * 2
+                equity -= cost
+
+                trades.append({
+                    'date': date,
+                    'action': 'LONG_VOL',
+                    'consensus': consensus,
+                    'iv_percentile': iv_percentile,
+                    'term_structure': term_structure,
+                    'regime_scalar': regime_scalar,
+                    'iv': atm_iv,
+                    'rv': rv,
+                    'iv_premium': features['iv_premium'],
+                    'cost': cost
+                })
+
+        # Exit logic with profit targets and stops
+        elif position != 0:
+            should_exit = False
+            exit_reason = ""
+
+            # Calculate position P&L as percentage of entry equity
+            position_pnl += daily_pnl
+            position_return = position_pnl / entry_equity if entry_equity else 0
+
+            # 1. Profit target hit
+            if position_return >= profit_target_pct:
+                should_exit = True
+                exit_reason = "PROFIT_TARGET"
+
+            # 2. Stop loss hit
+            elif position_return <= stop_loss_pct:
+                should_exit = True
+                exit_reason = "STOP_LOSS"
+
+            # 3. IV mean reversion complete (after min holding period)
+            elif days_held >= min_holding_days:
+                if position == -1 and iv_percentile < 0.50:  # Was short, IV has fallen
+                    should_exit = True
+                    exit_reason = "IV_REVERSION"
+                elif position == 1 and iv_percentile > 0.50:  # Was long, IV has risen
+                    should_exit = True
+                    exit_reason = "IV_REVERSION"
+
+            # 4. Max holding period
+            if days_held >= 30:  # Extended from 20 to 30 days
+                should_exit = True
+                exit_reason = "MAX_HOLDING"
+
+            if should_exit:
+                cost = option_spread_cost * position_size * equity + commission_per_contract * 2
+                equity -= cost
+
+                trades.append({
+                    'date': date,
+                    'action': 'EXIT',
+                    'exit_reason': exit_reason,
+                    'consensus': consensus,
+                    'entry_consensus': entry_consensus,
+                    'iv': atm_iv,
+                    'rv': rv,
+                    'days_held': days_held,
+                    'position_return': position_return * 100,  # As percentage
+                    'cost': cost
+                })
+                position = 0
+                entry_date = None
+                entry_consensus = 0
+                entry_equity = None
+                entry_iv = None
+                position_pnl = 0
+
+        equity += daily_pnl
+        prev_iv = atm_iv
+
+        equity_curve.append({
+            'date': date,
+            'equity': equity,
+            'position': position,
+            'consensus': consensus,
+            'iv': atm_iv,
+            'rv': rv,
+            'regime_scalar': regime_scalar
+        })
+
+    # Calculate metrics
+    equity_df = pd.DataFrame(equity_curve).set_index('date')
+    returns = equity_df['equity'].pct_change().dropna()
+
+    total_return = (equity - initial_capital) / initial_capital * 100
+    sharpe = returns.mean() / returns.std() * np.sqrt(252) if returns.std() > 0 else 0
+
+    nw_sharpe = float(calculate_sharpe_ratio(
+        returns,
+        risk_free_rate=Decimal("0.05"),
+        adjust_autocorrelation=True
+    ))
+
+    rolling_max = equity_df['equity'].cummax()
+    drawdown = (equity_df['equity'] - rolling_max) / rolling_max
+    max_dd = drawdown.min() * 100
+
+    # Trade analysis
+    long_trades = [t for t in trades if t['action'] == 'LONG_VOL']
+    short_trades = [t for t in trades if t['action'] == 'SHORT_VOL']
+    exit_trades = [t for t in trades if t['action'] == 'EXIT']
+
+    # Exit reason breakdown
+    exit_reasons = {}
+    for t in exit_trades:
+        reason = t.get('exit_reason', 'UNKNOWN')
+        exit_reasons[reason] = exit_reasons.get(reason, 0) + 1
+
+    # Calculate win rate
+    winning_exits = [t for t in exit_trades if t.get('position_return', 0) > 0]
+    losing_exits = [t for t in exit_trades if t.get('position_return', 0) < 0]
+    win_rate = len(winning_exits) / len(exit_trades) * 100 if exit_trades else 0
+
+    # Average return per trade
+    avg_return = np.mean([t.get('position_return', 0) for t in exit_trades]) if exit_trades else 0
+    avg_winner = np.mean([t.get('position_return', 0) for t in winning_exits]) if winning_exits else 0
+    avg_loser = np.mean([t.get('position_return', 0) for t in losing_exits]) if losing_exits else 0
+
+    # Calculate total trading costs
+    total_costs = sum(t.get('cost', 0) for t in trades)
+
+    print("\n" + "="*60)
+    print("RESULTS")
+    print("="*60)
+    print(f"\nInitial Capital:   ${initial_capital:>12,.2f}")
+    print(f"Final Capital:     ${equity:>12,.2f}")
+    print(f"Total Return:      {total_return:>12.2f}%")
+    print(f"\nSharpe Ratio:      {sharpe:>12.2f}")
+    print(f"NW-Adj Sharpe:     {nw_sharpe:>12.2f}")
+    print(f"Max Drawdown:      {max_dd:>12.2f}%")
+    print(f"\nTotal Trades:      {len(trades):>12}")
+    print(f"  Entries:         {len(long_trades) + len(short_trades):>12}")
+    print(f"    Long Vol:      {len(long_trades):>12}")
+    print(f"    Short Vol:     {len(short_trades):>12}")
+    print(f"  Exits:           {len(exit_trades):>12}")
+    print(f"\nExit Reasons:")
+    for reason, count in sorted(exit_reasons.items()):
+        print(f"    {reason:14s} {count:>6}")
+    print(f"\nWin Rate:          {win_rate:>12.1f}%")
+    print(f"Avg Return/Trade:  {avg_return:>12.2f}%")
+    print(f"Avg Winner:        {avg_winner:>12.2f}%")
+    print(f"Avg Loser:         {avg_loser:>12.2f}%")
+    print(f"\nTotal Trading Costs: ${total_costs:>10,.2f}")
+
+    # Analyze short vs long vol separately
+    short_exits = [t for t in exit_trades if t.get('entry_consensus', 0) < 0 or
+                   any(e['action'] == 'SHORT_VOL' and
+                       (pd.Timestamp(t['date']) - pd.Timestamp(e['date'])).days < 35
+                       for e in short_trades)]
+    long_exits = [t for t in exit_trades if t not in short_exits]
+
+    print(f"\nShort Vol Performance:")
+    print(f"  Entries:         {len(short_trades):>6}")
+    short_wins = sum(1 for t in exit_trades if t.get('position_return', 0) > 0)
+    print(f"  Win Rate (approx): {short_wins/len(exit_trades)*100:.1f}%")
+
+    print(f"\nLong Vol Performance:")
+    print(f"  Entries:         {len(long_trades):>6}")
+
+    # Year-by-year breakdown
+    print("\n" + "="*60)
+    print("YEAR-BY-YEAR ANALYSIS")
+    print("="*60)
+    equity_df['year'] = equity_df.index.year
+    yearly_returns = equity_df.groupby('year')['equity'].agg(['first', 'last'])
+    yearly_returns['return'] = (yearly_returns['last'] - yearly_returns['first']) / yearly_returns['first'] * 100
+    for year, row in yearly_returns.iterrows():
+        print(f"  {year}: {row['return']:>8.2f}%")
+
+    print("\n" + "="*60)
+    print("INTERPRETATION")
+    print("="*60)
+    print("Realistic Sharpe for Vol Arb: 0.5 - 1.5")
+    print("Red Flag Sharpe: > 2.0 (likely still has issues)")
+
+    if sharpe > 2.0:
+        print("\n[WARNING] Sharpe ratio still suspiciously high!")
+    elif sharpe < 0.5:
+        print("\n[INFO] Low Sharpe - strategy may need tuning")
+    else:
+        print("\n[OK] Sharpe ratio in realistic range for vol arb")
+
+    return {
+        'total_return': total_return,
+        'sharpe': sharpe,
+        'nw_sharpe': nw_sharpe,
+        'max_drawdown': max_dd,
+        'trades': len(trades),
+        'equity_curve': equity_df
+    }
+
+
+def main():
+    parser = argparse.ArgumentParser(description='Run volatility arbitrage backtest')
+    parser.add_argument(
+        '--data',
+        type=str,
+        default='src/volatility_arbitrage/data/SPY_Options_2019_24',
+        help='Path to options data directory'
+    )
+    parser.add_argument(
+        '--capital',
+        type=float,
+        default=100000,
+        help='Initial capital'
+    )
+    parser.add_argument(
+        '--config',
+        type=str,
+        default='config/volatility_arb.yaml',
+        help='Path to strategy config file'
+    )
+    args = parser.parse_args()
+
+    # Load config
+    print(f"Loading config from {args.config}...")
+    config = load_strategy_config(Path(args.config))
+
+    # Load data
+    print(f"\nLoading options data from {args.data}...")
+    options_df = load_json_options_data(args.data)
+
+    print(f"\nData summary:")
+    print(f"  Records: {len(options_df):,}")
+    print(f"  Date range: {options_df['date'].min()} to {options_df['date'].max()}")
+    print(f"  Unique dates: {options_df['date'].nunique()}")
+
+    # Run backtest
+    results = run_qv_backtest(options_df, config, args.capital)
+
+
+if __name__ == "__main__":
+    main()

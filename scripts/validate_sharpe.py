@@ -96,13 +96,21 @@ def calculate_iv_premium(df: pd.DataFrame) -> pd.DataFrame:
     Calculate daily IV premium (IV - realized vol).
 
     This is the core signal for volatility arbitrage.
+
+    IMPORTANT: Realized volatility is lagged by 1 day to avoid look-ahead bias.
+    When making a trading decision at market open on day T, we can only use
+    returns through day T-1 (since day T's return isn't known until close).
     """
     # Get daily spot prices
     daily_spot = df.groupby('tradeDate')['spotPrice'].first()
 
     # Calculate 20-day realized volatility
     returns = daily_spot.pct_change()
-    rv_20d = returns.rolling(20).std() * np.sqrt(252)
+    rv_20d_raw = returns.rolling(20).std() * np.sqrt(252)
+
+    # CRITICAL: Lag RV by 1 day to avoid look-ahead bias
+    # Trading decisions at time T can only use RV through T-1
+    rv_20d = rv_20d_raw.shift(1)
 
     # Get ATM implied volatility (options with |delta| closest to 0.5)
     def get_atm_iv(day_df):
@@ -165,6 +173,8 @@ def simulate_vol_arb_strategy(
     equity = initial_capital
     position = 0  # +1 = long vol, -1 = short vol, 0 = flat
     entry_price = 0
+    prev_spot = None  # Track previous spot for Greeks P&L
+    prev_iv = None    # Track previous IV for vega P&L
 
     trades = []
     equity_curve = []
@@ -178,12 +188,66 @@ def simulate_vol_arb_strategy(
         daily_pnl = 0
 
         if position != 0:
-            # Approximate daily P&L from vol position
-            # Short vol profits when realized vol < implied vol
-            # Long vol profits when realized vol > implied vol
-            vol_diff = rv - row['atm_iv']
-            vega_pnl = position * vol_diff * spot * 0.01  # Simplified vega exposure
-            daily_pnl = vega_pnl * position_size * initial_capital / spot
+            # Full Greeks-based P&L model for straddle position
+            # P&L = Delta*dS + 0.5*Gamma*dS² + Theta*dt + Vega*dIV
+            #
+            # CRITICAL: Vega P&L is based on CHANGE in IV, not RV-IV spread!
+            # The RV-IV spread tells us when to enter, but P&L comes from
+            # IV changes after entry.
+
+            atm_iv = row['atm_iv']
+            if prev_spot is None:
+                prev_spot = entry_price
+            if prev_iv is None:
+                prev_iv = atm_iv
+
+            # Price change
+            price_change = spot - prev_spot
+            pct_change = price_change / prev_spot if prev_spot > 0 else 0
+
+            # IV change (this drives vega P&L)
+            iv_change = atm_iv - prev_iv
+
+            # Time to expiry (assume ~30 DTE average, daily decay)
+            dte_years = 30 / 365
+
+            # Straddle Greeks (approximate for ATM straddle):
+            # Delta ≈ 0 (ATM straddle is delta-neutral at entry)
+            # Gamma ≈ 2 * (1 / (spot * vol * sqrt(T))) for ATM straddle
+            # Theta ≈ -spot * vol / (2 * sqrt(2*pi*T)) for ATM straddle (daily)
+            # Vega ≈ spot * sqrt(T) / sqrt(2*pi) for ATM straddle (per 1% IV)
+
+            sqrt_t = np.sqrt(dte_years)
+            sqrt_2pi = np.sqrt(2 * np.pi)
+
+            # Approximate Greeks for ATM straddle (long position)
+            gamma = 2.0 / (spot * atm_iv * sqrt_t) if atm_iv > 0 and sqrt_t > 0 else 0
+            theta_daily = -spot * atm_iv / (2 * sqrt_2pi * sqrt_t * 365) if sqrt_t > 0 else 0
+            vega = spot * sqrt_t / sqrt_2pi
+
+            # Greeks P&L components (per unit notional)
+            # position = +1 for long straddle, -1 for short straddle
+            #
+            # Long straddle (+1):
+            #   - Gamma positive: profits from large moves
+            #   - Theta negative: loses time decay daily
+            #   - Vega positive: profits when IV rises
+            #
+            # Short straddle (-1):
+            #   - Gamma negative: loses on large moves
+            #   - Theta positive: collects time decay daily
+            #   - Vega negative: profits when IV falls
+
+            gamma_pnl = 0.5 * gamma * (price_change ** 2) * position
+            theta_pnl = theta_daily * position  # Long pays theta, short collects
+            vega_pnl = vega * iv_change * position  # IV change, not RV-IV level
+
+            # Scale to position size (as fraction of capital)
+            notional = position_size * initial_capital
+            daily_pnl = (gamma_pnl + theta_pnl + vega_pnl) * notional / spot
+
+            prev_spot = spot  # Track for next iteration
+            prev_iv = atm_iv
 
         # Check for entry signals
         if position == 0:
@@ -191,25 +255,36 @@ def simulate_vol_arb_strategy(
                 # Short volatility (sell straddle)
                 position = -1
                 entry_price = spot
-                cost = commission + slippage * spot * position_size
+                prev_spot = spot  # Reset for P&L tracking
+                prev_iv = row['atm_iv']  # Reset IV tracking
+                # Realistic option entry costs: spread (5%) + commission
+                # Straddle = 2 legs, each with ~2.5% effective spread
+                option_spread_cost = 0.05 * spot * position_size  # 5% of notional for spread
+                cost = commission + option_spread_cost
                 equity -= cost
                 trades.append({
                     'date': date,
                     'action': 'SHORT_VOL',
                     'price': spot,
-                    'iv_premium': iv_premium
+                    'iv_premium': iv_premium,
+                    'entry_cost': cost
                 })
             elif iv_premium < -entry_threshold:
                 # Long volatility (buy straddle)
                 position = 1
                 entry_price = spot
-                cost = commission + slippage * spot * position_size
+                prev_spot = spot  # Reset for P&L tracking
+                prev_iv = row['atm_iv']  # Reset IV tracking
+                # Realistic option entry costs
+                option_spread_cost = 0.05 * spot * position_size
+                cost = commission + option_spread_cost
                 equity -= cost
                 trades.append({
                     'date': date,
                     'action': 'LONG_VOL',
                     'price': spot,
-                    'iv_premium': iv_premium
+                    'iv_premium': iv_premium,
+                    'entry_cost': cost
                 })
 
         # Check for exit signals
@@ -222,15 +297,20 @@ def simulate_vol_arb_strategy(
                 should_exit = True
 
             if should_exit:
-                cost = commission + slippage * spot * position_size
+                # Exit costs: option spread + commission
+                option_spread_cost = 0.05 * spot * position_size
+                cost = commission + option_spread_cost
                 equity -= cost
                 trades.append({
                     'date': date,
                     'action': 'EXIT',
                     'price': spot,
-                    'pnl': daily_pnl
+                    'pnl': daily_pnl,
+                    'exit_cost': cost
                 })
                 position = 0
+                prev_spot = None  # Reset for next position
+                prev_iv = None
 
         equity += daily_pnl
         equity_curve.append({

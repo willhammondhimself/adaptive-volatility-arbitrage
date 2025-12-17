@@ -79,17 +79,24 @@ def calculate_sharpe_ratio(
     returns: pd.Series,
     risk_free_rate: Decimal = Decimal("0.05"),
     periods_per_year: int = 252,
+    adjust_autocorrelation: bool = True,
 ) -> Decimal:
     """
-    Calculate Sharpe ratio.
+    Calculate Sharpe ratio with optional Newey-West autocorrelation adjustment.
+
+    Volatility arbitrage returns are often autocorrelated due to mean reversion
+    in volatility. The standard Sharpe ratio assumes IID returns, which understates
+    the true standard deviation when returns are correlated. The Newey-West
+    adjustment accounts for this serial correlation.
 
     Args:
         returns: Series of returns
         risk_free_rate: Annual risk-free rate
         periods_per_year: Number of periods per year (252 for daily)
+        adjust_autocorrelation: Whether to apply Newey-West adjustment (default True)
 
     Returns:
-        Sharpe ratio
+        Sharpe ratio (adjusted for autocorrelation if enabled)
     """
     if len(returns) < 2:
         return Decimal("0")
@@ -98,12 +105,54 @@ def calculate_sharpe_ratio(
     daily_rf = float(risk_free_rate) / periods_per_year
     excess_returns = returns - daily_rf
 
-    # Calculate mean and std of excess returns
+    # Calculate mean of excess returns
     mean_excess = excess_returns.mean()
     std_excess = excess_returns.std()
 
     if std_excess == 0 or np.isnan(std_excess):
         return Decimal("0")
+
+    # Apply Newey-West adjustment for autocorrelation if enabled
+    if adjust_autocorrelation and len(returns) > 10:
+        try:
+            # Calculate autocorrelation function
+            n = len(excess_returns)
+            # Optimal lag selection (Newey-West formula)
+            max_lag = int(np.floor(4 * (n / 100) ** (2/9)))
+            max_lag = max(1, min(max_lag, n // 4))  # Bound lag
+
+            # Calculate autocorrelations
+            acf_values = []
+            for lag in range(1, max_lag + 1):
+                if lag < len(excess_returns):
+                    autocorr = excess_returns.autocorr(lag=lag)
+                    if not np.isnan(autocorr):
+                        acf_values.append(autocorr)
+                    else:
+                        acf_values.append(0.0)
+                else:
+                    acf_values.append(0.0)
+
+            # Newey-West variance adjustment factor
+            # adjustment = 1 + 2 * sum((1 - i/(lag+1)) * rho_i for i in 1..lag)
+            adjustment = 1.0
+            for i, rho in enumerate(acf_values, 1):
+                weight = 1 - i / (max_lag + 1)  # Bartlett kernel
+                adjustment += 2 * weight * rho
+
+            # Apply adjustment (only if it increases std, i.e., positive autocorrelation)
+            if adjustment > 1:
+                std_excess = std_excess * np.sqrt(adjustment)
+                logger.debug(
+                    f"Newey-West adjustment applied",
+                    extra={
+                        "adjustment_factor": adjustment,
+                        "original_std": float(excess_returns.std()),
+                        "adjusted_std": float(std_excess),
+                    }
+                )
+        except Exception as e:
+            logger.warning(f"Newey-West adjustment failed, using standard Sharpe: {e}")
 
     # Annualize
     sharpe = (mean_excess / std_excess) * np.sqrt(periods_per_year)
