@@ -467,6 +467,36 @@ curl -X POST http://localhost:8000/api/v1/heston/price-surface \
 
 ## 🔍 Recent Updates
 
+### December 16, 2025: Sharpe Ratio Validation Suite
+Added comprehensive anti-overfitting validation framework:
+
+```bash
+python3 scripts/validate_sharpe.py --data path/to/options_data.csv
+```
+
+**Validation Tests Included**:
+| Test | Purpose | What It Catches |
+|------|---------|-----------------|
+| Out-of-Sample | 70/15/15 train/val/test split | Look-ahead bias |
+| Walk-Forward | Rolling 252-day windows | Regime overfitting |
+| Monte Carlo | 1000x entry timing jitter | Lucky timing |
+| Cost Sensitivity | 2x, 3x, 5x transaction costs | Unrealistic fills |
+| Regime Analysis | Low/Normal/High vol splits | Bull-only profits |
+| Parameter Sensitivity | ±10%, ±20% param variation | Fragile optimization |
+| Bootstrap CI | 95% confidence intervals | Statistical noise |
+
+**Realistic Sharpe Expectations**:
+| Strategy Type | Realistic | Red Flag |
+|---------------|-----------|----------|
+| Systematic Vol Arb | 0.5 - 1.5 | > 2.0 |
+| Delta-Neutral Options | 0.3 - 1.0 | > 1.5 |
+
+### December 16, 2025: Repository Git History Cleanup
+- ✅ Removed 2.5GB of large CSV files from git history
+- ✅ Reduced .git folder from 936MB → 31MB
+- ✅ Force-pushed clean history to GitHub
+- ✅ Data files backed up locally (excluded from version control)
+
 ### December 13, 2025: Repository Cleanup & Testing ✅
 - ✅ Cleaned up repository structure (docs/, strategies/, models/ folders)
 - ✅ Removed personal references and absolute paths
@@ -546,6 +576,6 @@ MIT License - See LICENSE file
 
 ---
 
-**Status**: Production-Ready ✅ | All Tests Passing ✅ | Dashboard Live ✅
+**Status**: Production-Ready ✅ | All Tests Passing ✅ | Dashboard Live ✅ | Validation Suite Added ✅
 
-**Last Updated**: December 13, 2025
+**Last Updated**: December 16, 2025
