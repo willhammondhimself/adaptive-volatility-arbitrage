@@ -285,7 +285,7 @@ class HestonCalibrator:
     """
     Calibrate Heston model to market option prices.
 
-    Uses L-BFGS-B optimization to minimize pricing errors.
+    Uses differential evolution to minimize pricing errors.
     """
 
     def __init__(
@@ -344,7 +344,7 @@ class HestonCalibrator:
                 float(initial_guess.rho),
             ])
 
-        # Parameter bounds for L-BFGS-B
+        # Parameter bounds for differential_evolution
         bounds_list = [
             self.bounds["v0"],
             self.bounds["theta"],
@@ -395,13 +395,15 @@ class HestonCalibrator:
                 logger.warning(f"Error in objective function: {e}")
                 return 1e10  # Large penalty
 
-        # Optimize
-        result = optimize.minimize(
+        # Optimize using differential_evolution
+        result = optimize.differential_evolution(
             objective,
-            initial_params,
-            method="L-BFGS-B",
             bounds=bounds_list,
-            options={"maxiter": 1000, "ftol": 1e-9},
+            seed=42,
+            maxiter=1000,
+            atol=1e-9,
+            tol=1e-9,
+            workers=1,
         )
 
         # Extract calibrated parameters

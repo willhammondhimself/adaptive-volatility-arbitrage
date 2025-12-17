@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional, Literal
 
+import numpy as np
 import pandas as pd
 from pydantic import BaseModel, Field, ConfigDict
 
@@ -195,6 +196,7 @@ class MultiAssetBacktestEngine(BacktestEngine):
     - Portfolio-level Greeks tracking
     - Options-specific execution model
     - Option expiration handling
+    - Realistic margin requirements for short options
     """
 
     def __init__(
@@ -202,7 +204,8 @@ class MultiAssetBacktestEngine(BacktestEngine):
         config: BacktestConfig,
         strategy: Strategy,
         option_commission_per_contract: Decimal = Decimal("0.65"),
-        option_slippage_pct: Decimal = Decimal("0.01"),  # 1% for options
+        option_slippage_pct: Decimal = Decimal("0.025"),  # 2.5% for options (realistic)
+        margin_requirement_pct: Decimal = Decimal("0.25"),  # 25% margin for short options
     ) -> None:
         """
         Initialize multi-asset backtest engine.
@@ -211,15 +214,21 @@ class MultiAssetBacktestEngine(BacktestEngine):
             config: Backtest configuration
             strategy: Trading strategy
             option_commission_per_contract: Commission per option contract
-            option_slippage_pct: Slippage percentage for options
+            option_slippage_pct: Slippage percentage for options (default 2.5%)
+            margin_requirement_pct: Margin requirement for short options (default 25%)
         """
         super().__init__(config, strategy)
 
         self.option_commission_per_contract = option_commission_per_contract
         self.option_slippage_pct = option_slippage_pct
+        self.margin_requirement_pct = margin_requirement_pct
 
         # Enhanced position tracking
         self.multi_positions: dict[str, MultiAssetPosition] = {}
+
+        # Margin tracking for short options
+        self.margin_used: Decimal = Decimal("0")  # Current margin in use
+        self.margin_history: list[dict] = []  # Track margin over time
 
         # Greeks history
         self.greeks_history: list[dict] = []
@@ -229,8 +238,108 @@ class MultiAssetBacktestEngine(BacktestEngine):
             extra={
                 "option_commission": float(option_commission_per_contract),
                 "option_slippage": float(option_slippage_pct),
+                "margin_requirement": float(margin_requirement_pct),
             },
         )
+
+        self.history = []
+
+    def _calculate_option_margin(
+        self,
+        underlying_price: Decimal,
+        strike: Decimal,
+        option_price: Decimal,
+        quantity: int,
+        is_short: bool,
+    ) -> Decimal:
+        """
+        Calculate margin requirement for an option position.
+
+        Uses a simplified Reg-T margin calculation:
+        - Short options: max(25% of underlying + premium, 10% of strike + premium)
+        - Long options: No margin required (paid in full)
+
+        Args:
+            underlying_price: Current price of underlying
+            strike: Option strike price
+            option_price: Current option price
+            quantity: Number of contracts
+            is_short: True if selling/shorting the option
+
+        Returns:
+            Margin requirement in dollars
+        """
+        if not is_short:
+            # Long options have no margin requirement
+            return Decimal("0")
+
+        # Option multiplier
+        multiplier = Decimal("100")
+        abs_quantity = Decimal(abs(quantity))
+
+        # Simplified Reg-T margin for short options:
+        # 25% of underlying value + option premium (received)
+        # Minimum: 10% of strike + premium
+        underlying_component = underlying_price * self.margin_requirement_pct * multiplier * abs_quantity
+        premium_value = option_price * multiplier * abs_quantity
+
+        # Standard margin: 25% of underlying + premium
+        standard_margin = underlying_component + premium_value
+
+        # Minimum margin: 10% of strike + premium
+        min_margin = strike * Decimal("0.10") * multiplier * abs_quantity + premium_value
+
+        return max(standard_margin, min_margin)
+
+    def _get_available_buying_power(self) -> Decimal:
+        """
+        Calculate available buying power considering margin requirements.
+
+        Buying power = Cash - Margin Used
+
+        Returns:
+            Available buying power in dollars
+        """
+        return max(self.cash - self.margin_used, Decimal("0"))
+
+    def _update_margin_from_position(
+        self,
+        symbol: str,
+        underlying_price: Decimal,
+        strike: Decimal,
+        option_price: Decimal,
+        quantity: int,
+    ) -> None:
+        """
+        Update margin requirements after position change.
+
+        Args:
+            symbol: Option symbol
+            underlying_price: Current underlying price
+            strike: Option strike price
+            option_price: Current option price
+            quantity: New position quantity (negative = short)
+        """
+        if quantity < 0:
+            # Short position - requires margin
+            margin = self._calculate_option_margin(
+                underlying_price=underlying_price,
+                strike=strike,
+                option_price=option_price,
+                quantity=quantity,
+                is_short=True,
+            )
+            # Store margin requirement for this position
+            self._position_margins = getattr(self, '_position_margins', {})
+            self._position_margins[symbol] = margin
+        else:
+            # Long position or closed - no margin
+            self._position_margins = getattr(self, '_position_margins', {})
+            self._position_margins.pop(symbol, None)
+
+        # Recalculate total margin used
+        self._position_margins = getattr(self, '_position_margins', {})
+        self.margin_used = sum(self._position_margins.values(), Decimal("0"))
 
     def _execute_signal(
         self,
@@ -264,7 +373,7 @@ class MultiAssetBacktestEngine(BacktestEngine):
         day_data: pd.DataFrame,
     ) -> None:
         """
-        Execute an option trade with option-specific costs.
+        Execute an option trade with option-specific costs and margin requirements.
 
         Args:
             signal: Option trading signal
@@ -308,7 +417,7 @@ class MultiAssetBacktestEngine(BacktestEngine):
             option_type=option_type,
         )
 
-        # Apply slippage
+        # Apply slippage (2.5% default - realistic for options)
         if signal.action == "buy":
             execution_price = theoretical_price * (Decimal("1") + self.option_slippage_pct)
         else:
@@ -320,15 +429,43 @@ class MultiAssetBacktestEngine(BacktestEngine):
         # Options have 100 multiplier
         trade_value = execution_price * Decimal(abs(signal.quantity)) * Decimal("100")
 
-        # Check cash for buys
+        # Determine if this is opening a short position (selling to open)
+        existing_position = self.multi_positions.get(signal.symbol)
+        is_opening_short = signal.action == "sell" and (
+            existing_position is None or existing_position.quantity >= 0
+        )
+
+        # Check buying power / margin requirements
         if signal.action == "buy":
+            # Long options: need cash for premium + commission
             total_cost = trade_value + commission
             if total_cost > self.cash:
                 logger.warning(
-                    f"Insufficient cash for option trade",
+                    f"Insufficient cash for option buy",
                     extra={
                         "required": float(total_cost),
                         "available": float(self.cash),
+                    },
+                )
+                return
+        elif is_opening_short:
+            # Short options: check margin requirement
+            margin_required = self._calculate_option_margin(
+                underlying_price=underlying_price,
+                strike=strike,
+                option_price=execution_price,
+                quantity=signal.quantity,
+                is_short=True,
+            )
+            available_buying_power = self._get_available_buying_power()
+
+            if margin_required > available_buying_power:
+                logger.warning(
+                    f"Insufficient buying power for short option",
+                    extra={
+                        "margin_required": float(margin_required),
+                        "available_buying_power": float(available_buying_power),
+                        "current_margin_used": float(self.margin_used),
                     },
                 )
                 return
@@ -349,12 +486,33 @@ class MultiAssetBacktestEngine(BacktestEngine):
         if signal.action == "buy":
             self.cash -= trade_value + commission
         else:
+            # Selling options: receive premium minus commission
             self.cash += trade_value - commission
 
         # Update multi-asset positions
         self._update_multi_position_from_trade(
             trade, timestamp, underlying_price, strike, option_type, risk_free_rate, implied_vol
         )
+
+        # Update margin tracking for short positions
+        if signal.symbol in self.multi_positions:
+            new_position = self.multi_positions[signal.symbol]
+            self._update_margin_from_position(
+                symbol=signal.symbol,
+                underlying_price=underlying_price,
+                strike=strike,
+                option_price=execution_price,
+                quantity=new_position.quantity,
+            )
+        else:
+            # Position was closed
+            self._update_margin_from_position(
+                symbol=signal.symbol,
+                underlying_price=underlying_price,
+                strike=strike,
+                option_price=execution_price,
+                quantity=0,
+            )
 
         logger.debug(
             f"Executed option trade: {signal.action} {signal.quantity} {signal.symbol}",
@@ -364,6 +522,7 @@ class MultiAssetBacktestEngine(BacktestEngine):
                 "quantity": signal.quantity,
                 "price": float(execution_price),
                 "commission": float(commission),
+                "margin_used": float(self.margin_used),
             },
         )
 
@@ -566,8 +725,10 @@ class MultiAssetBacktestEngine(BacktestEngine):
         for signal in signals:
             self._execute_signal(signal, timestamp, day_data)
 
-        # Record equity
+        # Record equity and margin
         equity = self._calculate_multi_equity(day_data)
+        buying_power = self._get_available_buying_power()
+
         self.equity_history.append(
             {
                 "timestamp": timestamp,
@@ -576,8 +737,23 @@ class MultiAssetBacktestEngine(BacktestEngine):
                 "total_equity": float(equity),
                 "portfolio_delta": float(greeks.delta),
                 "portfolio_vega": float(greeks.vega),
+                "margin_used": float(self.margin_used),
+                "buying_power": float(buying_power),
             }
         )
+        self.margin_history.append({
+            "timestamp": timestamp,
+            "margin_used": float(self.margin_used),
+            "buying_power": float(buying_power),
+            "margin_utilization": float(self.margin_used / self.cash) if self.cash > 0 else 0.0,
+        })
+        self.history.append({
+            "timestamp": timestamp,
+            "equity": float(equity),
+            "cash": float(self.cash),
+            "margin_used": float(self.margin_used),
+        })
+
 
     def _update_multi_positions(self, timestamp: datetime, day_data: pd.DataFrame) -> None:
         """Update all multi-asset positions with current prices."""
@@ -621,3 +797,41 @@ class MultiAssetBacktestEngine(BacktestEngine):
             positions_value += pos.market_value
 
         return self.cash + positions_value
+
+    def get_results(self) -> dict:
+        """
+        Calculates and returns the backtest results.
+        """
+        # SAFETY CHECK: If history doesn't exist, return empty results
+        if not hasattr(self, 'history') or not self.history:
+            return {
+                "total_return": 0.0,
+                "sharpe_ratio": 0.0,
+                "max_drawdown": 0.0,
+                "total_trades": 0,
+                "equity_curve": [],
+            }
+
+        equity_curve = pd.DataFrame(self.history).set_index("timestamp")["equity"]
+        
+        # Total Return
+        total_return = (equity_curve.iloc[-1] / equity_curve.iloc[0]) - 1
+        
+        # Sharpe Ratio
+        daily_returns = equity_curve.pct_change().dropna()
+        sharpe_ratio = 0.0
+        if daily_returns.std() > 0:
+            sharpe_ratio = (daily_returns.mean() / daily_returns.std()) * np.sqrt(252)
+            
+        # Max Drawdown
+        rolling_max = equity_curve.cummax()
+        drawdown = (equity_curve - rolling_max) / rolling_max
+        max_drawdown = drawdown.min()
+
+        return {
+            "total_return": float(total_return),
+            "sharpe_ratio": float(sharpe_ratio),
+            "max_drawdown": float(max_drawdown),
+            "total_trades": len(self.trades),
+            "equity_curve": self.history,
+        }

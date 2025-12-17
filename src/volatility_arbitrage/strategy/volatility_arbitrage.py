@@ -8,10 +8,11 @@ Implements a delta-neutral volatility arbitrage strategy that:
 4. Maintains delta-neutral hedging
 """
 
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Optional, Dict, List
 
 import numpy as np
 import pandas as pd
@@ -29,6 +30,31 @@ except ImportError:
     RegimeDetector = None  # type: ignore
 
 logger = get_logger(__name__)
+
+
+@dataclass
+class FeatureBuffers:
+    """
+    Rolling buffers for QV strategy feature calculation.
+
+    Uses deques with maxlen for O(1) append/pop operations.
+    Tracks features needed for z-score calculation and signal generation.
+    """
+
+    # 20-day windows for realized volatility
+    returns_20d: deque = field(default_factory=lambda: deque(maxlen=20))
+    rv_20d: deque = field(default_factory=lambda: deque(maxlen=20))
+
+    # 60-day windows for feature medians/stdevs
+    pc_ratio_60d: deque = field(default_factory=lambda: deque(maxlen=60))
+    iv_skew_60d: deque = field(default_factory=lambda: deque(maxlen=60))
+    iv_premium_60d: deque = field(default_factory=lambda: deque(maxlen=60))
+    term_structure_60d: deque = field(default_factory=lambda: deque(maxlen=60))
+    volume_ratio_60d: deque = field(default_factory=lambda: deque(maxlen=60))
+    near_term_sentiment_60d: deque = field(default_factory=lambda: deque(maxlen=60))
+
+    # 252-day window for vol regime percentile
+    rv_252d: deque = field(default_factory=lambda: deque(maxlen=252))
 
 
 @dataclass
@@ -116,6 +142,51 @@ class VolatilityArbitrageConfig:
     regime_lookback_period: int = 60  # Days for regime detection
     exit_on_regime_transition: bool = False  # Exit all positions when regime changes
 
+    # ===== QV STRATEGY CONFIGURATION =====
+    # QV Strategy Toggle
+    use_qv_strategy: bool = False  # Backward compatibility flag
+
+    # QV Feature Windows
+    rv_window: int = 20           # Realized volatility lookback
+    feature_window: int = 60      # Z-score calculation window
+    regime_window: int = 252      # Vol percentile window
+
+    # QV Signal Thresholds
+    pc_ratio_threshold: Decimal = Decimal("1.0")    # High fear threshold
+    skew_threshold: Decimal = Decimal("0.05")       # 5% skew threshold
+    premium_threshold: Decimal = Decimal("0.10")    # 10% IV premium threshold
+    term_structure_threshold: Decimal = Decimal("0.0")  # Positive slope threshold
+    volume_spike_threshold: Decimal = Decimal("1.5")    # 1.5x median volume
+    sentiment_threshold: Decimal = Decimal("-0.05")     # Negative sentiment threshold
+
+    # QV Consensus Scoring
+    consensus_threshold: Decimal = Decimal("0.2")   # Minimum consensus for entry
+
+    # QV Signal Weights (must sum to 1.0)
+    weight_pc_ratio: Decimal = Decimal("0.20")
+    weight_iv_skew: Decimal = Decimal("0.20")
+    weight_iv_premium: Decimal = Decimal("0.15")
+    weight_term_structure: Decimal = Decimal("0.15")
+    weight_volume_spike: Decimal = Decimal("0.15")
+    weight_near_term_sentiment: Decimal = Decimal("0.15")
+
+    # QV Regime Scalars
+    regime_crisis_scalar: Decimal = Decimal("0.5")    # Vol >90th percentile
+    regime_elevated_scalar: Decimal = Decimal("0.75") # Vol 70-90th percentile
+    regime_normal_scalar: Decimal = Decimal("1.0")    # Vol 30-70th percentile
+    regime_low_scalar: Decimal = Decimal("1.2")       # Vol 10-30th percentile
+    regime_extreme_low_scalar: Decimal = Decimal("1.5") # Vol <10th percentile
+
+    # Bullish Base Exposure Parameters
+    base_long_bias: Decimal = Decimal("0.8")              # Minimum long exposure (0.8 = 80%)
+    signal_adjustment_factor: Decimal = Decimal("0.7")    # Signal scaling factor
+
+    # ===== TIERED POSITION SIZING =====
+    use_tiered_sizing: bool = True  # Enable continuous position scaling
+    min_consensus_threshold: Decimal = Decimal("0.15")  # Below this = no trade (lower for synthetic data)
+    position_scaling_method: str = "quadratic"  # linear, quadratic, cubic
+    min_holding_days: int = 5  # Minimum days before exit allowed
+
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         base = {
@@ -180,6 +251,14 @@ class VolatilityArbitrageStrategy(Strategy):
         self.regime_history: list[tuple[datetime, int]] = []  # (timestamp, regime)
         self.returns_for_regime: dict[str, pd.Series] = {}  # symbol -> returns
 
+        # QV strategy state (only used if use_qv_strategy=True)
+        self.qv_buffers: Dict[str, FeatureBuffers] = {}  # symbol -> feature buffers
+        self.last_consensus: Dict[str, Decimal] = {}  # symbol -> last consensus score
+
+        # Entry tracking for tiered sizing and holding period
+        self.entry_timestamps: Dict[str, datetime] = {}  # symbol -> entry time
+        self.entry_consensus: Dict[str, Decimal] = {}    # symbol -> consensus at entry
+
         # Validate regime configuration
         if config.use_regime_detection:
             if regime_detector is None:
@@ -188,6 +267,37 @@ class VolatilityArbitrageStrategy(Strategy):
             elif config.regime_params is None or len(config.regime_params) == 0:
                 logger.warning("use_regime_detection=True but no regime_params provided")
                 config.use_regime_detection = False
+
+        # Validate bullish base exposure parameters
+        if not (Decimal("-2.0") <= self.config.base_long_bias <= Decimal("2.0")):
+            raise ValueError(
+                f"base_long_bias must be in range [-2.0, 2.0], got {self.config.base_long_bias}"
+            )
+
+        if not (Decimal("0.0") <= self.config.signal_adjustment_factor <= Decimal("2.0")):
+            raise ValueError(
+                f"signal_adjustment_factor must be in range [0.0, 2.0], got {self.config.signal_adjustment_factor}"
+            )
+
+        # Validate exposure range consistency
+        max_possible_exposure = (
+            self.config.base_long_bias + self.config.signal_adjustment_factor
+        ) * self.config.regime_extreme_low_scalar  # Maximum regime scalar
+
+        min_possible_exposure = (
+            self.config.base_long_bias - self.config.signal_adjustment_factor
+        ) * self.config.regime_crisis_scalar  # Minimum with crisis scaling
+
+        logger.info(
+            f"Exposure range with current params: "
+            f"[{min_possible_exposure:.2f}, {max_possible_exposure:.2f}]"
+        )
+
+        if max_possible_exposure > Decimal("2.0"):
+            logger.warning(
+                f"Maximum possible exposure ({max_possible_exposure:.2f}) exceeds typical limits. "
+                f"Consider reducing base_long_bias or regime_extreme_low_scalar."
+            )
 
         logger.info(
             "Initialized VolatilityArbitrageStrategy",
@@ -199,7 +309,12 @@ class VolatilityArbitrageStrategy(Strategy):
         timestamp: datetime,
         market_data: pd.DataFrame,
         positions: dict[str, Position],
+        # ADD THESE ARGUMENTS:
+        cash: float = 0.0,
+        portfolio_greeks: Optional[dict] = None,
+        **kwargs
     ) -> list[Signal]:
+
         """
         Generate trading signals based on volatility spread.
 
@@ -273,9 +388,16 @@ class VolatilityArbitrageStrategy(Strategy):
                 self.current_regime
             )
 
-            # Check for entry signals
+            # Check for entry signals (supports both legacy and QV strategies)
             entry_signals = self._check_entry_signals(
-                vol_spread, option_chain, positions, entry_threshold, position_multiplier
+                timestamp=timestamp,
+                symbol=symbol,
+                option_chain=option_chain,
+                positions=positions,
+                cash=Decimal(str(cash)),
+                vol_spread=vol_spread,
+                entry_threshold=entry_threshold,
+                position_multiplier=position_multiplier
             )
             signals.extend(entry_signals)
 
@@ -391,6 +513,47 @@ class VolatilityArbitrageStrategy(Strategy):
 
     def _check_entry_signals(
         self,
+        timestamp: datetime,
+        symbol: str,
+        option_chain: OptionChain,
+        positions: dict[str, Position],
+        cash: Decimal,
+        vol_spread: Optional[VolatilitySpread] = None,
+        entry_threshold: Optional[Decimal] = None,
+        position_multiplier: Optional[Decimal] = None,
+    ) -> list[Signal]:
+        """
+        Check for entry signals using either legacy or QV strategy.
+
+        BACKWARD COMPATIBILITY: Branch based on config.use_qv_strategy
+
+        Args:
+            timestamp: Current timestamp
+            symbol: Underlying symbol
+            option_chain: Option chain data
+            positions: Current positions
+            cash: Available account equity
+            vol_spread: Volatility spread (for legacy strategy)
+            entry_threshold: Entry threshold (for legacy strategy)
+            position_multiplier: Position multiplier (for legacy strategy)
+
+        Returns:
+            List of entry signals
+        """
+        if self.config.use_qv_strategy:
+            # QV strategy: Use consensus-based entry logic
+            return self._generate_qv_entry_logic(timestamp, option_chain, cash)
+        else:
+            # Legacy strategy: Use IV-RV spread logic
+            if vol_spread is None or entry_threshold is None or position_multiplier is None:
+                logger.warning("Legacy strategy requires vol_spread, entry_threshold, and position_multiplier")
+                return []
+            return self._generate_legacy_entry_signals(
+                vol_spread, option_chain, positions, entry_threshold, position_multiplier
+            )
+
+    def _generate_legacy_entry_signals(
+        self,
         vol_spread: VolatilitySpread,
         option_chain: OptionChain,
         positions: dict[str, Position],
@@ -398,7 +561,9 @@ class VolatilityArbitrageStrategy(Strategy):
         position_multiplier: Decimal,
     ) -> list[Signal]:
         """
-        Check for new position entry signals.
+        Legacy IV-RV spread strategy for entry signals.
+
+        This is the original naive strategy logic for comparison.
 
         Args:
             vol_spread: Calculated volatility spread
@@ -454,9 +619,9 @@ class VolatilityArbitrageStrategy(Strategy):
             reason = f"Long volatility: IV {vol_spread.implied_vol:.1%} < RV {vol_spread.forecasted_vol:.1%}"
 
         # Position sizing with regime-aware multiplier
-        base_quantity = 10
+        base_quantity = 1
         quantity = int(base_quantity * float(position_multiplier))
-        quantity = max(10, quantity)  # Ensure at least 1 contract
+        quantity = max(1, quantity)  # Ensure at least 1 contract
 
         if self.current_regime is not None:
             reason += f" (regime {self.current_regime}, multiplier {position_multiplier:.2f})"
@@ -499,19 +664,22 @@ class VolatilityArbitrageStrategy(Strategy):
         position_multiplier = 1 if action == "buy" else -1
         net_delta = (call_greeks.delta + put_greeks.delta) * Decimal(quantity) * Decimal(position_multiplier)
 
-        # Hedge to delta-neutral
-        LONG_BIAS = Decimal("0.80")
-        target_hedge_ratio = Decimal("1.0") - LONG_BIAS 
+        TARGET_DELTA_PER_CONTRACT = Decimal("0.20") 
         
-        hedge_quantity = int(-net_delta * 100 * target_hedge_ratio)
+        target_shares = int(Decimal(quantity) * 100 * TARGET_DELTA_PER_CONTRACT)
+        
+        hedge_quantity = target_shares - int(net_delta * 100)
 
         if hedge_quantity != 0:
-            hedge_action = "buy" if hedge_quantity > 0 else "sell"
-            signals.append(Signal(
+             # If positive, we need to buy shares (Long Bias)
+             # If negative, we sell (unlikely with this logic)
+             hedge_action = "buy" if hedge_quantity > 0 else "sell"
+             
+             signals.append(Signal(
                 symbol=vol_spread.symbol,
                 action=hedge_action,
                 quantity=abs(hedge_quantity),
-                reason=f"Delta hedge: target neutral, net delta {net_delta:.2f}"
+                reason=f"Structural Long Hedge: Target {target_shares} shares"
             ))
 
         # Track position entry
@@ -534,6 +702,9 @@ class VolatilityArbitrageStrategy(Strategy):
             }
         )
 
+        for s in signals:
+            print(f"DEBUG SIGNAL: {s.symbol} {s.action} {s.quantity} ({s.reason})")
+            
         return signals
 
     def _check_exit_signals(
@@ -554,6 +725,10 @@ class VolatilityArbitrageStrategy(Strategy):
             List of exit signals
         """
         signals: list[Signal] = []
+
+        # Check minimum holding period (tiered sizing feature)
+        if not self._check_holding_period(vol_spread.symbol, vol_spread.timestamp):
+            return []  # Cannot exit yet - must hold for min_holding_days
 
         # Check if we have a position in this symbol
         if vol_spread.symbol not in self.option_positions:
@@ -644,6 +819,10 @@ class VolatilityArbitrageStrategy(Strategy):
         # Remove from tracking
         if symbol in self.option_positions:
             del self.option_positions[symbol]
+
+        # Clean up entry tracking (tiered sizing feature)
+        self.entry_timestamps.pop(symbol, None)
+        self.entry_consensus.pop(symbol, None)
 
         logger.info(
             f"Closing volatility arbitrage position for {symbol}",
@@ -753,3 +932,784 @@ class VolatilityArbitrageStrategy(Strategy):
                 self.config.exit_threshold_pct,
                 Decimal("1.0"),
             )
+
+    # ===== QV STRATEGY METHODS =====
+
+    def _has_multiple_expiries(self, option_chain: OptionChain) -> bool:
+        """
+        Check if option_chain contains options with multiple expiries.
+
+        Used for term structure signal - need at least 2 different DTEs.
+
+        Args:
+            option_chain: Option chain to check
+
+        Returns:
+            True if multiple expiries detected
+        """
+        if not option_chain.calls:
+            return False
+
+        # Get unique expiry dates from option chain
+        unique_expiries = set()
+        for call in option_chain.calls:
+            unique_expiries.add(call.expiry.date())
+
+        # Need at least 2 different expiries for term structure
+        return len(unique_expiries) >= 2
+
+    def _get_iv_for_dte(self, option_chain: OptionChain, target_dte: int) -> Decimal:
+        """
+        Get ATM IV for options closest to target DTE.
+
+        Args:
+            option_chain: Option chain
+            target_dte: Target days to expiry
+
+        Returns:
+            ATM implied volatility for closest expiry, or Decimal("0") if not found
+        """
+        atm_strike = option_chain.underlying_price
+        current_time = option_chain.timestamp
+
+        # Filter options by DTE range (±5 days tolerance) and near ATM
+        candidates = []
+        for opt in option_chain.calls:
+            # Calculate DTE in days
+            dte_days = (opt.expiry - current_time).days
+
+            # Check if within target DTE range and near ATM
+            if (abs(dte_days - target_dte) <= 5 and
+                abs(opt.strike - atm_strike) < atm_strike * Decimal("0.05")):
+                candidates.append(opt)
+
+        if not candidates:
+            return Decimal("0")
+
+        # Return IV of closest ATM option
+        atm_option = min(candidates, key=lambda opt: abs(opt.strike - atm_strike))
+        return atm_option.implied_volatility or Decimal("0")
+
+    def _extract_daily_features(self, option_chain: OptionChain) -> Dict[str, Decimal]:
+        """
+        Extract daily features from option chain for QV strategy.
+
+        Features:
+        1. PC Ratio: Put Volume / Call Volume
+        2. IV Skew: ATM Put IV - ATM Call IV
+        3. IV Premium: IV - RV
+        4. Term Structure: (60d IV - 30d IV) / 30
+        5. Volume Ratio: Current Volume / 20d Median
+        6. Near-term Sentiment: 7d IV - 30d IV
+        7. RV 20d: Realized volatility
+
+        Args:
+            option_chain: Current option chain
+
+        Returns:
+            Dictionary with feature names → values
+        """
+        features: Dict[str, Decimal] = {}
+
+        # 1. PC Ratio (Put Volume / Call Volume)
+        total_put_volume = sum(float(p.volume or 0) for p in option_chain.puts)
+        total_call_volume = sum(float(c.volume or 0) for c in option_chain.calls)
+        features['pc_ratio'] = (
+            Decimal(str(total_put_volume / total_call_volume))
+            if total_call_volume > 0 else Decimal("1.0")
+        )
+
+        # 2. IV Skew (ATM Put IV - ATM Call IV)
+        atm_strike = option_chain.underlying_price
+        atm_put = min(option_chain.puts, key=lambda p: abs(p.strike - atm_strike), default=None)
+        atm_call = min(option_chain.calls, key=lambda c: abs(c.strike - atm_strike), default=None)
+
+        if atm_put and atm_call and atm_put.implied_volatility and atm_call.implied_volatility:
+            features['iv_skew'] = atm_put.implied_volatility - atm_call.implied_volatility
+        else:
+            features['iv_skew'] = Decimal("0")
+
+        # 3. IV Percentile (replaces backward-looking IV Premium)
+        # IMPROVEMENT: Use forward-looking IV percentile instead of IV - RV
+        # IV Percentile = current ATM IV / 252-day IV history percentile
+        # This measures if IV is cheap/expensive relative to its own history
+        symbol = option_chain.symbol
+
+        # Get ATM IV average
+        if atm_put and atm_call and atm_put.implied_volatility and atm_call.implied_volatility:
+            atm_iv = (atm_put.implied_volatility + atm_call.implied_volatility) / Decimal("2")
+        else:
+            atm_iv = Decimal("0")
+
+        # Calculate IV percentile from 60-day IV history (stored in iv_premium buffer)
+        # High percentile = IV expensive = contrarian bullish (fear overdone)
+        # Low percentile = IV cheap = contrarian bearish (complacency)
+        if symbol in self.qv_buffers and len(self.qv_buffers[symbol].iv_premium_60d) >= 20:
+            iv_history = np.array(list(self.qv_buffers[symbol].iv_premium_60d))
+            # Calculate percentile rank of current IV
+            if atm_iv > 0:
+                iv_percentile = (iv_history <= float(atm_iv)).sum() / len(iv_history)
+                features['iv_premium'] = Decimal(str(iv_percentile))  # 0.0-1.0 scale
+            else:
+                features['iv_premium'] = Decimal("0.5")  # Neutral
+        else:
+            features['iv_premium'] = Decimal("0.5")  # Neutral until enough data
+
+        # Store ATM IV for history tracking (instead of iv_premium = atm_iv - rv)
+        features['atm_iv'] = atm_iv
+
+        # Still calculate RV for regime detection
+        rv_20d = self._calculate_realized_vol_20d(symbol)
+        features['rv_20d'] = rv_20d
+
+        # 4. Term Structure (60d IV - 30d IV) / 30 days
+        # USER DECISION: Implement with robust fallback
+        if self._has_multiple_expiries(option_chain):
+            iv_30d = self._get_iv_for_dte(option_chain, target_dte=30)
+            iv_60d = self._get_iv_for_dte(option_chain, target_dte=60)
+            if iv_30d > 0 and iv_60d > 0:
+                features['term_structure'] = (iv_60d - iv_30d) / Decimal("30")
+            else:
+                features['term_structure'] = Decimal("0")
+        else:
+            features['term_structure'] = Decimal("0")  # Neutral signal if data unavailable
+
+        # 5. Volume Ratio (Current Volume / 20d Median Volume)
+        current_volume = total_put_volume + total_call_volume
+        if symbol in self.qv_buffers and len(self.qv_buffers[symbol].volume_ratio_60d) >= 20:
+            volume_history = list(self.qv_buffers[symbol].volume_ratio_60d)[-20:]
+            median_volume = Decimal(str(np.median(volume_history)))
+            features['volume_ratio'] = (
+                Decimal(str(current_volume)) / median_volume
+                if median_volume > 0 else Decimal("1.0")
+            )
+        else:
+            features['volume_ratio'] = Decimal("1.0")  # Neutral until enough data
+
+        # 6. Near-term Sentiment (7d IV - 30d IV)
+        if self._has_multiple_expiries(option_chain):
+            iv_7d = self._get_iv_for_dte(option_chain, target_dte=7)
+            iv_30d = self._get_iv_for_dte(option_chain, target_dte=30)
+            if iv_7d > 0 and iv_30d > 0:
+                features['near_term_sentiment'] = iv_7d - iv_30d
+            else:
+                features['near_term_sentiment'] = Decimal("0")
+        else:
+            features['near_term_sentiment'] = Decimal("0")  # Neutral if unavailable
+
+        return features
+
+    def _calculate_realized_vol_20d(self, symbol: str) -> Decimal:
+        """
+        Calculate 20-day realized volatility from price history.
+
+        Args:
+            symbol: Underlying symbol
+
+        Returns:
+            Annualized realized volatility (stdev of log returns)
+        """
+        if symbol not in self.price_history or len(self.price_history[symbol]) < 21:
+            return Decimal("0.20")  # Default 20% vol
+
+        # Get last 21 prices (for 20 returns)
+        prices = self.price_history[symbol].tail(21)
+        returns = calculate_returns(prices, method="log")
+
+        if len(returns) < 20:
+            return Decimal("0.20")
+
+        # Calculate annualized volatility
+        daily_vol = float(returns.std())
+        annualized_vol = daily_vol * np.sqrt(252)
+
+        return Decimal(str(annualized_vol))
+
+    def _update_qv_features(self, symbol: str, features: Dict[str, Decimal]) -> None:
+        """
+        Update rolling buffers with daily features.
+
+        Args:
+            symbol: Asset symbol
+            features: Dictionary from _extract_daily_features()
+        """
+        # Initialize buffers if needed
+        if symbol not in self.qv_buffers:
+            self.qv_buffers[symbol] = FeatureBuffers()
+
+        buffers = self.qv_buffers[symbol]
+
+        # Update 60-day feature buffers
+        buffers.pc_ratio_60d.append(float(features['pc_ratio']))
+        buffers.iv_skew_60d.append(float(features['iv_skew']))
+        # Store ATM IV for percentile calculation (not the percentile itself)
+        buffers.iv_premium_60d.append(float(features.get('atm_iv', features['iv_premium'])))
+        buffers.term_structure_60d.append(float(features['term_structure']))
+        buffers.volume_ratio_60d.append(float(features['volume_ratio']))
+        buffers.near_term_sentiment_60d.append(float(features['near_term_sentiment']))
+
+        # Update 252-day RV buffer for regime detection
+        buffers.rv_252d.append(float(features['rv_20d']))
+
+    def _calculate_z_score(self, value: Decimal, buffer: deque) -> Decimal:
+        """
+        Calculate z-score: (value - median) / stdev
+
+        Args:
+            value: Current value
+            buffer: 60-day historical buffer
+
+        Returns:
+            Z-score (standardized value)
+        """
+        if len(buffer) < 20:  # Minimum data requirement
+            return Decimal("0")
+
+        buffer_array = np.array(list(buffer))
+        median = np.median(buffer_array)
+        stdev = np.std(buffer_array)
+
+        if stdev == 0:
+            return Decimal("0")
+
+        z_score = (float(value) - median) / stdev
+        return Decimal(str(z_score))
+
+    def _generate_binary_signals(self, symbol: str, features: Dict[str, Decimal]) -> Dict[str, int]:
+        """
+        Generate 6 binary signals based on z-scores and thresholds.
+
+        Returns:
+            Dictionary with signal names mapped to -1 (bearish), 0 (neutral), +1 (bullish)
+        """
+        buffers = self.qv_buffers[symbol]
+        signals: Dict[str, int] = {}
+
+        # 1. PC Ratio Signal (Contrarian: High PC Ratio → Bullish)
+        # IMPROVEMENT: Lower threshold from 1.0σ to 0.5σ for more responsive signals
+        pc_z = self._calculate_z_score(features['pc_ratio'], buffers.pc_ratio_60d)
+        if pc_z > Decimal("0.5"):  # High PC ratio (fear) → Bullish
+            signals['pc_ratio'] = 1
+        elif pc_z < Decimal("-0.5"):  # Low PC ratio (greed) → Bearish
+            signals['pc_ratio'] = -1
+        else:
+            signals['pc_ratio'] = 0
+
+        # 2. IV Skew Signal (Contrarian: High Skew → Bullish)
+        # IMPROVEMENT: Lower threshold from 1.0σ to 0.5σ for more responsive signals
+        skew_z = self._calculate_z_score(features['iv_skew'], buffers.iv_skew_60d)
+        if skew_z > Decimal("0.5"):  # High skew (put premium) → Bullish
+            signals['iv_skew'] = 1
+        elif skew_z < Decimal("-0.5"):  # Low skew → Bearish
+            signals['iv_skew'] = -1
+        else:
+            signals['iv_skew'] = 0
+
+        # 3. IV Percentile Signal (Contrarian: High IV Percentile → Bullish)
+        # IV Percentile is already in 0.0-1.0 range from _extract_daily_features
+        # High percentile (>0.7) = IV expensive = fear overdone = Bullish
+        # Low percentile (<0.3) = IV cheap = complacency = Bearish
+        iv_percentile = features['iv_premium']  # Now stores percentile 0.0-1.0
+        if iv_percentile > Decimal("0.70"):  # High IV percentile → Bullish (fear overdone)
+            signals['iv_premium'] = 1
+        elif iv_percentile < Decimal("0.30"):  # Low IV percentile → Bearish (complacency)
+            signals['iv_premium'] = -1
+        else:
+            signals['iv_premium'] = 0
+
+        # 4. Term Structure Signal (Positive slope → Bullish)
+        # USER DECISION: Will be 0 if data unavailable
+        if features['term_structure'] > self.config.term_structure_threshold:
+            signals['term_structure'] = 1  # Upward sloping → Bullish
+        elif features['term_structure'] < -self.config.term_structure_threshold:
+            signals['term_structure'] = -1  # Inverted → Bearish
+        else:
+            signals['term_structure'] = 0
+
+        # 5. Volume Spike Signal (High volume → continuation)
+        # IMPROVEMENT: Lower threshold from 1.5σ to 1.0σ for more signal activity
+        volume_z = self._calculate_z_score(features['volume_ratio'], buffers.volume_ratio_60d)
+        if volume_z > Decimal("1.0"):  # Unusual high volume
+            signals['volume_spike'] = 1  # Assume bullish continuation
+        elif volume_z < Decimal("-0.5"):  # Unusually low volume
+            signals['volume_spike'] = -1  # Bearish
+        else:
+            signals['volume_spike'] = 0
+
+        # 6. Near-term Sentiment Signal (Negative → Bullish contrarian)
+        # IMPROVEMENT: Lower threshold from 1.0σ to 0.5σ for more responsive signals
+        sentiment_z = self._calculate_z_score(features['near_term_sentiment'], buffers.near_term_sentiment_60d)
+        if sentiment_z < Decimal("-0.5"):  # Negative near-term sentiment → Bullish
+            signals['near_term_sentiment'] = 1
+        elif sentiment_z > Decimal("0.5"):  # Positive near-term sentiment → Bearish
+            signals['near_term_sentiment'] = -1
+        else:
+            signals['near_term_sentiment'] = 0
+
+        return signals
+
+    def _calculate_consensus_score(self, binary_signals: Dict[str, int]) -> Decimal:
+        """
+        Calculate weighted consensus score from binary signals.
+
+        Args:
+            binary_signals: Dict with signal names → {-1, 0, +1}
+
+        Returns:
+            Consensus score in range [-1.0, +1.0]
+        """
+        weighted_sum = (
+            Decimal(str(binary_signals['pc_ratio'])) * self.config.weight_pc_ratio +
+            Decimal(str(binary_signals['iv_skew'])) * self.config.weight_iv_skew +
+            Decimal(str(binary_signals['iv_premium'])) * self.config.weight_iv_premium +
+            Decimal(str(binary_signals['term_structure'])) * self.config.weight_term_structure +
+            Decimal(str(binary_signals['volume_spike'])) * self.config.weight_volume_spike +
+            Decimal(str(binary_signals['near_term_sentiment'])) * self.config.weight_near_term_sentiment
+        )
+
+        # Normalize to [-1.0, +1.0] range
+        # Maximum possible weighted sum = 1.0 (all signals +1 with weights summing to 1.0)
+        consensus = weighted_sum  # Already normalized if weights sum to 1.0
+
+        # Clamp to valid range
+        consensus = max(Decimal("-1.0"), min(Decimal("1.0"), consensus))
+
+        return consensus
+
+    def _calculate_position_multiplier(self, consensus: Decimal) -> Decimal:
+        """
+        Calculate position size multiplier based on signal strength.
+
+        Uses configurable scaling (linear/quadratic/cubic) to reward
+        high-conviction signals with larger positions.
+
+        Quadratic scaling rewards stronger signals disproportionately:
+        - consensus = 0.3 (min threshold) → multiplier = 0.00 (no trade)
+        - consensus = 0.4 → multiplier = 0.02 (2% position)
+        - consensus = 0.5 → multiplier = 0.08 (8% position)
+        - consensus = 0.6 → multiplier = 0.18 (18% position)
+        - consensus = 0.7 → multiplier = 0.33 (33% position)
+        - consensus = 0.8 → multiplier = 0.51 (51% position)
+        - consensus = 0.9 → multiplier = 0.73 (73% position)
+        - consensus = 1.0 → multiplier = 1.00 (100% position)
+
+        Args:
+            consensus: Consensus score [-1.0, +1.0]
+
+        Returns:
+            Position multiplier [0.0, 1.0] where 0 = no trade, 1 = full position
+        """
+        abs_consensus = abs(consensus)
+        min_thresh = self.config.min_consensus_threshold
+
+        # Below minimum threshold = no trade
+        if abs_consensus < min_thresh:
+            return Decimal("0")
+
+        # Normalize to 0-1 range above threshold
+        normalized = (abs_consensus - min_thresh) / (Decimal("1.0") - min_thresh)
+
+        # Apply scaling method
+        if self.config.position_scaling_method == "linear":
+            return normalized
+        elif self.config.position_scaling_method == "quadratic":
+            return normalized ** 2
+        elif self.config.position_scaling_method == "cubic":
+            return normalized ** 3
+        else:
+            return normalized  # Default to linear
+
+    def _check_holding_period(self, symbol: str, current_time: datetime) -> bool:
+        """
+        Check if minimum holding period has elapsed.
+
+        Args:
+            symbol: Asset symbol
+            current_time: Current timestamp
+
+        Returns:
+            True if can exit, False if must continue holding
+        """
+        if symbol not in self.entry_timestamps:
+            return True
+
+        entry_time = self.entry_timestamps[symbol]
+        days_held = (current_time - entry_time).days
+
+        return days_held >= self.config.min_holding_days
+
+    def _calculate_qv_position_size(
+        self,
+        symbol: str,
+        consensus: Decimal,
+        features: Dict[str, Decimal]
+    ) -> Decimal:
+        """
+        Calculate position size (exposure scalar) based on consensus and vol regime.
+
+        Args:
+            symbol: Asset symbol
+            consensus: Consensus score [-1.0, +1.0]
+            features: Daily features (contains rv_20d)
+
+        Returns:
+            Exposure scalar (target delta as % of equity)
+        """
+        # 1. Calculate vol percentile (current RV vs 252-day history)
+        buffers = self.qv_buffers[symbol]
+        if len(buffers.rv_252d) < 60:  # Minimum data for percentile
+            vol_percentile = Decimal("0.5")  # Assume normal regime
+        else:
+            rv_array = np.array(list(buffers.rv_252d))
+            current_rv = float(features['rv_20d'])
+            # Calculate percentile: what % of historical values are <= current value
+            percentile = (rv_array <= current_rv).sum() / len(rv_array)
+            vol_percentile = Decimal(str(percentile))
+
+        # 2. Determine regime scalar based on percentile
+        if vol_percentile > Decimal("0.90"):  # Crisis (>90th percentile)
+            regime_scalar = self.config.regime_crisis_scalar  # 0.5x
+        elif vol_percentile > Decimal("0.70"):  # Elevated (70-90th)
+            regime_scalar = self.config.regime_elevated_scalar  # 0.75x
+        elif vol_percentile > Decimal("0.30"):  # Normal (30-70th)
+            regime_scalar = self.config.regime_normal_scalar  # 1.0x
+        elif vol_percentile > Decimal("0.10"):  # Low (10-30th)
+            regime_scalar = self.config.regime_low_scalar  # 1.2x
+        else:  # Extreme Low (<10th percentile)
+            regime_scalar = self.config.regime_extreme_low_scalar  # 1.5x
+
+        # 3. Calculate exposure with bullish base bias
+        # Formula: exposure = (base_long_bias + signal_adjustment) * regime_scalar
+        # Where signal_adjustment = consensus * signal_adjustment_factor
+        signal_adjustment = consensus * self.config.signal_adjustment_factor
+        base_exposure = self.config.base_long_bias + signal_adjustment
+        exposure = base_exposure * regime_scalar
+
+        # 4. Clamp to user-specified limits (-1.0 to +1.5)
+        # User preference: Allow shorting but prevent excessive leverage
+        exposure = max(Decimal("-1.0"), min(Decimal("1.5"), exposure))
+
+        # Log exposure components for debugging
+        logger.debug(
+            f"Exposure calculation: consensus={consensus:.2f}, "
+            f"signal_adj={signal_adjustment:.2f}, base={base_exposure:.2f}, "
+            f"regime={regime_scalar:.2f}, final={exposure:.2f}"
+        )
+
+        return exposure
+
+    def _exposure_to_option_quantity(
+        self,
+        exposure: Decimal,
+        account_equity: Decimal,
+        underlying_price: Decimal,
+        option_delta: Decimal
+    ) -> int:
+        """
+        Convert exposure scalar to option contract quantity.
+
+        Position Sizing:
+        - Apply position_size_pct to limit capital at risk per trade
+        - Then apply exposure scalar for directional adjustment
+        - Target Notional = position_size_pct × Account Equity × Exposure
+
+        Args:
+            exposure: Exposure scalar (e.g., 1.0 = 100% of allocated capital)
+            account_equity: Current account equity (cash)
+            underlying_price: Current underlying price
+            option_delta: Delta of selected option
+
+        Returns:
+            Number of contracts to trade
+        """
+        # Apply position_size_pct to limit capital allocation per trade
+        # This prevents over-leveraging even with high exposure values
+        position_capital = account_equity * (self.config.position_size_pct / Decimal("100"))
+
+        # Calculate target delta-adjusted notional using capped capital
+        target_delta_notional = exposure * position_capital
+
+        # Each option contract controls 100 shares
+        # Delta-adjusted notional = num_contracts * underlying_price * option_delta * 100
+        # Solve for num_contracts:
+        denominator = underlying_price * abs(option_delta) * Decimal("100")
+
+        if denominator == 0:
+            return 0
+
+        num_contracts = abs(target_delta_notional) / denominator
+
+        # Round to integer contracts (minimum 1 if we have a signal)
+        result = max(1, int(num_contracts)) if num_contracts >= Decimal("0.5") else 0
+
+        return result
+
+    def _generate_qv_entry_signals(
+        self,
+        option_chain: OptionChain,
+        cash: Decimal,
+        consensus: Decimal,
+        exposure: Decimal
+    ) -> List[Signal]:
+        """
+        Generate entry signals based on QV consensus score.
+
+        USER DECISION: Sell ATM Puts (bullish) / Sell ATM Calls (bearish)
+
+        Args:
+            option_chain: Current option chain
+            cash: Available account equity
+            consensus: Consensus score [-1.0, +1.0]
+            exposure: Position size (delta exposure as % of equity)
+
+        Returns:
+            List of Signal objects for option trades
+        """
+        signals: List[Signal] = []
+
+        # Check consensus threshold
+        if abs(consensus) < self.config.consensus_threshold:
+            return signals  # No entry if consensus too weak
+
+        # Determine direction
+        if consensus > self.config.consensus_threshold:
+            # Bullish: Sell ATM Puts
+            signals = self._create_long_delta_signals(option_chain, cash, exposure)
+        elif consensus < -self.config.consensus_threshold:
+            # Bearish: Sell ATM Calls
+            signals = self._create_short_delta_signals(option_chain, cash, exposure)
+
+        return signals
+
+    def _create_long_delta_signals(
+        self,
+        option_chain: OptionChain,
+        cash: Decimal,
+        exposure: Decimal
+    ) -> List[Signal]:
+        """
+        Create signals for bullish position: Sell ATM Puts.
+
+        Selling puts:
+        - Collects premium (Short Vega)
+        - Gains positive delta exposure
+        - Benefits from rising prices and/or vol contraction
+
+        Args:
+            option_chain: Current option chain
+            cash: Available account equity
+            exposure: Position size (delta exposure as % of equity)
+
+        Returns:
+            List of Signal objects
+        """
+        signals: List[Signal] = []
+
+        # Find ATM put
+        atm_strike = option_chain.underlying_price
+        atm_put = min(
+            option_chain.puts,
+            key=lambda p: abs(p.strike - atm_strike),
+            default=None
+        )
+
+        if not atm_put:
+            return signals
+
+        # Calculate Greeks for position sizing
+        greeks = BlackScholesModel.greeks(
+            S=option_chain.underlying_price,
+            K=atm_put.strike,
+            T=option_chain.time_to_expiry,
+            r=option_chain.risk_free_rate,
+            sigma=atm_put.implied_volatility or Decimal("0.20"),
+            option_type=OptionType.PUT
+        )
+
+        # Calculate quantity based on delta-adjusted notional
+        quantity = self._exposure_to_option_quantity(
+            exposure=exposure,
+            account_equity=cash,
+            underlying_price=option_chain.underlying_price,
+            option_delta=greeks.delta
+        )
+
+        if quantity > 0:
+            # Format signal symbol for option
+            signal_symbol = f"{option_chain.symbol}_PUT_{float(atm_put.strike):.0f}_{option_chain.expiry.strftime('%Y%m%d')}"
+
+            signals.append(Signal(
+                symbol=signal_symbol,
+                action="sell",  # Sell put (Short position)
+                quantity=quantity,
+                reason=f"QV Bullish: Sell ATM Put | Exposure={float(exposure):.2f}"
+            ))
+
+        return signals
+
+    def _create_short_delta_signals(
+        self,
+        option_chain: OptionChain,
+        cash: Decimal,
+        exposure: Decimal
+    ) -> List[Signal]:
+        """
+        Create signals for bearish position: Sell ATM Calls.
+
+        Selling calls:
+        - Collects premium (Short Vega)
+        - Gains negative delta exposure
+        - Benefits from falling prices and/or vol contraction
+
+        Args:
+            option_chain: Current option chain
+            cash: Available account equity
+            exposure: Position size (delta exposure as % of equity)
+
+        Returns:
+            List of Signal objects
+        """
+        signals: List[Signal] = []
+
+        # Find ATM call
+        atm_strike = option_chain.underlying_price
+        atm_call = min(
+            option_chain.calls,
+            key=lambda c: abs(c.strike - atm_strike),
+            default=None
+        )
+
+        if not atm_call:
+            return signals
+
+        # Calculate Greeks
+        greeks = BlackScholesModel.greeks(
+            S=option_chain.underlying_price,
+            K=atm_call.strike,
+            T=option_chain.time_to_expiry,
+            r=option_chain.risk_free_rate,
+            sigma=atm_call.implied_volatility or Decimal("0.20"),
+            option_type=OptionType.CALL
+        )
+
+        # Calculate quantity (use absolute value of exposure for bearish)
+        quantity = self._exposure_to_option_quantity(
+            exposure=abs(exposure),  # Magnitude only
+            account_equity=cash,
+            underlying_price=option_chain.underlying_price,
+            option_delta=greeks.delta
+        )
+
+        if quantity > 0:
+            # Format signal symbol for option
+            signal_symbol = f"{option_chain.symbol}_CALL_{float(atm_call.strike):.0f}_{option_chain.expiry.strftime('%Y%m%d')}"
+
+            signals.append(Signal(
+                symbol=signal_symbol,
+                action="sell",  # Sell call (Short position)
+                quantity=quantity,
+                reason=f"QV Bearish: Sell ATM Call | Exposure={float(exposure):.2f}"
+            ))
+
+        return signals
+
+    def _generate_qv_entry_logic(
+        self,
+        timestamp: datetime,
+        option_chain: OptionChain,
+        cash: Decimal
+    ) -> List[Signal]:
+        """
+        QV strategy entry logic with tiered position sizing.
+
+        Workflow:
+        1. DTE filter (check min/max days to expiry)
+        2. Extract daily features
+        3. Update rolling buffers
+        4. Generate binary signals
+        5. Calculate consensus score
+        6. Apply tiered position sizing (quadratic scaling)
+        7. Calculate base position size with regime adaptation
+        8. Generate entry signals (sell ATM puts/calls)
+
+        Args:
+            timestamp: Current timestamp
+            option_chain: Current option chain
+            cash: Available account equity
+
+        Returns:
+            List of trading signals
+        """
+        symbol = option_chain.symbol
+
+        # Step 1: DTE filter
+        days_to_expiry = (option_chain.expiry - timestamp).days
+        if days_to_expiry < self.config.min_days_to_expiry:
+            return []
+        if days_to_expiry > self.config.max_days_to_expiry:
+            return []
+
+        # Step 2: Extract features
+        features = self._extract_daily_features(option_chain)
+
+        # Step 3: Update buffers
+        self._update_qv_features(symbol, features)
+
+        # Step 4: Check if we have enough data
+        if symbol not in self.qv_buffers or len(self.qv_buffers[symbol].rv_252d) < 60:
+            return []  # Not enough data yet
+
+        # Step 5: Generate binary signals
+        binary_signals = self._generate_binary_signals(symbol, features)
+
+        # Step 6: Calculate consensus
+        consensus = self._calculate_consensus_score(binary_signals)
+
+        # Step 7: Apply TIERED SIZING - calculate position multiplier
+        if self.config.use_tiered_sizing:
+            position_mult = self._calculate_position_multiplier(consensus)
+
+            if position_mult == Decimal("0"):
+                logger.debug(f"Skipping weak signal: {symbol} consensus={consensus:.3f}")
+                return []
+        else:
+            # Legacy fixed threshold
+            if abs(consensus) < self.config.consensus_threshold:
+                return []
+            position_mult = Decimal("1.0")
+
+        # Step 8: Calculate base position size with regime adaptation
+        base_exposure = self._calculate_qv_position_size(symbol, consensus, features)
+
+        # Step 9: Apply tiered multiplier to exposure
+        adjusted_exposure = base_exposure * position_mult
+
+        # Step 10: Generate entry signals
+        entry_signals = self._generate_qv_entry_signals(option_chain, cash, consensus, adjusted_exposure)
+
+        # Track entry for holding period enforcement
+        if entry_signals:
+            self.entry_timestamps[symbol] = timestamp
+            self.entry_consensus[symbol] = consensus
+
+            logger.info(
+                f"QV Entry: {symbol} | consensus={consensus:.3f} | "
+                f"multiplier={position_mult:.2f} | exposure={adjusted_exposure:.2f}"
+            )
+
+        # Track consensus for monitoring
+        self.last_consensus[symbol] = consensus
+
+        logger.debug(
+            f"QV Strategy: {symbol}",
+            extra={
+                "symbol": symbol,
+                "consensus": float(consensus),
+                "position_mult": float(position_mult),
+                "base_exposure": float(base_exposure),
+                "adjusted_exposure": float(adjusted_exposure),
+                "signals": binary_signals,
+            }
+        )
+
+        return entry_signals
