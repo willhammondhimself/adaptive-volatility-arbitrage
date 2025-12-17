@@ -493,7 +493,15 @@ curl -X POST http://localhost:8000/api/v1/heston/price-surface \
 - Carr & Madan (1999): "Option Valuation using the Fast Fourier Transform"
 - BrownianNotion/OptionFFT: https://github.com/BrownianNotion/OptionFFT
 
-**Results**: Errors reduced from 30-200% → **0.00-0.03%** (production-ready!)
+**Results**: Errors reduced from 30-200% → **0.00-0.03%**!
+
+---
+
+## 🗃️ Data Sources
+All historical options data used in this project comes from publicly available datasets:
+- **SPY and QQQ options chains** from [OptionMetrics IvyDB](https://optionmetrics.com/) or [CBOE historical data](https://www.cboe.com/data/historical-options-data/).
+- Data is preprocessed into JSON and CSV formats for backtesting.
+- Raw data files are excluded from version control due to size limits.
 
 ---
 
