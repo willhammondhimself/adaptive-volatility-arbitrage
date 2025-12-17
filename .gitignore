@@ -158,6 +158,18 @@ logs/*.log
 *.parquet
 *.h5
 *.hdf5
+
+# Large data files (options data - excluded due to size >100MB)
+src/volatility_arbitrage/data/*.csv
+src/volatility_arbitrage/data/*.json
+**/options_eod_*.csv
+**/options_eod_*.json
+**/*_base.csv
+**/*_base.json
+
+# Any large data directories
+**/data/raw/
+**/data/processed/
 frontend/node_modules/
 node_modules/
 __pycache__/
