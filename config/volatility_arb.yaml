@@ -86,6 +86,56 @@ strategy:
   position_scaling_method: quadratic
   min_holding_days: 5
 
+  # ===== ENHANCED RISK MANAGEMENT (NEW) =====
+  # NOTE: Set all to false to restore original v1.0 baseline
+
+  # Dynamic Consensus Thresholds (regime-aware) - AGGRESSIVE for more trades
+  use_dynamic_threshold: false
+  dynamic_threshold:
+    crisis_threshold: 0.15      # Even in crisis, take good trades (was 0.20)
+    elevated_threshold: 0.12    # Lower threshold in elevated vol (was 0.15)
+    normal_threshold: 0.10      # Aggressive in normal conditions (was 0.12)
+    low_vol_threshold: 0.08     # Very aggressive in low vol (was 0.10)
+
+  # Drawdown Recovery (position scaling during drawdowns)
+  use_drawdown_recovery: false
+  drawdown_halt_threshold: 0.12  # Halt new trades at 12% drawdown
+  drawdown_thresholds:
+    - [0.02, 1.0]    # <2% DD: full size
+    - [0.04, 0.75]   # 2-4% DD: 75% size
+    - [0.06, 0.50]   # 4-6% DD: 50% size
+    - [0.08, 0.25]   # 6-8% DD: 25% size
+    - [0.10, 0.10]   # 8-10% DD: minimal trading
+
+  # Kelly Criterion Position Sizing - DISABLED to match original
+  use_kelly_sizing: false
+  kelly_fraction: 0.25
+  kelly_lookback_trades: 50
+  kelly_min_trades: 20
+  kelly_max_position_pct: 0.10
+  kelly_min_position_pct: 0.01
+
+  # Signal Veto Rules (protective filters) - BALANCED FOR QUALITY + RETURNS
+  use_signal_veto: true                 # ENABLED - filter dangerous trades
+  veto_vix_extreme_threshold: 40.0      # Block short vol at VIX > 40
+  veto_vix_spike_threshold: 0.50        # Block after 50% VIX spike (relaxed - was 30%)
+  veto_vix_spike_lookback: 5            # Over 5 days
+  veto_backwardation_threshold: -0.15   # Block at 15% backwardation
+  veto_signal_disagreement: 4           # Allow 3, block at 4 (relaxed for more trades)
+  veto_regime_crisis_percentile: 0.90   # Block short vol at RV > 90th percentile
+
+  # Greeks-Based Exit Rules
+  use_greeks_exit: true
+  vega_profit_target_multiple: 2.0     # Exit if vega P&L > 2x theta paid
+  theta_exit_threshold_pct: -0.03      # Exit if daily theta > 3% of position
+  delta_drift_exit_threshold: 0.30     # Exit if |delta| > 0.30
+
+  # Gamma-Aware Rehedging
+  use_dynamic_delta_threshold: true
+  gamma_threshold_factor: 1.0          # Scaling factor for gamma adjustment
+  min_delta_threshold: 0.02            # Never rehedge more often than this
+  max_delta_threshold: 0.20            # Always rehedge at this level
+
   # ===== REGIME DETECTION =====
   # Enable regime-aware trading with HMM/GMM detection
   use_regime_detection: true

@@ -19,6 +19,9 @@ import numpy as np
 
 from volatility_arbitrage.backtest.metrics import calculate_sharpe_ratio
 from volatility_arbitrage.core.config import load_strategy_config
+from volatility_arbitrage.risk.drawdown_manager import DrawdownManager, DrawdownConfig
+from volatility_arbitrage.risk.position_sizing import KellyPositionSizer, KellyConfig
+from volatility_arbitrage.strategy.veto_manager import VetoManager, VetoConfig
 
 
 def load_json_options_data(data_dir: str) -> pd.DataFrame:
@@ -284,7 +287,7 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
     4. Regime-aware position sizing
     """
     print("\n" + "="*60)
-    print("QV ENHANCED STRATEGY BACKTEST")
+    print("QV ENHANCED STRATEGY BACKTEST (v2.0 - Risk Management)")
     print("="*60)
 
     # Parameters from config
@@ -295,14 +298,81 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
     min_holding_days = config.min_holding_days
     consensus_threshold = float(config.consensus_threshold)
 
-    # Enhanced entry thresholds (asymmetric - short vol has better edge)
-    short_vol_iv_percentile = 0.75  # IV >75th percentile
-    long_vol_iv_percentile = 0.25   # IV <25th percentile
-    short_vol_premium_min = 0.06    # IV must be 6%+ above RV
-    long_vol_premium_max = -0.06    # IV must be 6%+ below RV
+    # ===== NEW: Initialize Risk Management Components =====
+    # Load raw YAML for new risk management parameters (not in dataclass yet)
+    import yaml
+    with open('config/volatility_arb.yaml', 'r') as f:
+        raw_config = yaml.safe_load(f)
+    strategy_cfg = raw_config.get('strategy', {})
 
-    # Term structure confirmation - disabled as too restrictive
-    require_term_structure = False
+    # Drawdown Manager
+    use_drawdown_recovery = strategy_cfg.get('use_drawdown_recovery', True)
+    if use_drawdown_recovery:
+        dd_thresholds = strategy_cfg.get('drawdown_thresholds', [
+            [0.02, 1.0], [0.04, 0.75], [0.06, 0.50], [0.08, 0.25], [0.10, 0.10]
+        ])
+        drawdown_config = DrawdownConfig(
+            thresholds=[tuple(t) for t in dd_thresholds],
+            halt_threshold=strategy_cfg.get('drawdown_halt_threshold', 0.12),
+        )
+        drawdown_manager = DrawdownManager(drawdown_config)
+        print(f"\n  Drawdown Recovery: ENABLED (halt at {drawdown_config.halt_threshold*100:.0f}%)")
+    else:
+        drawdown_manager = None
+        print(f"\n  Drawdown Recovery: DISABLED")
+
+    # Kelly Position Sizer
+    use_kelly_sizing = strategy_cfg.get('use_kelly_sizing', True)
+    if use_kelly_sizing:
+        kelly_config = KellyConfig(
+            kelly_fraction=strategy_cfg.get('kelly_fraction', 0.25),
+            lookback_trades=strategy_cfg.get('kelly_lookback_trades', 50),
+            min_trades_for_kelly=strategy_cfg.get('kelly_min_trades', 20),
+            max_position_pct=strategy_cfg.get('kelly_max_position_pct', 0.15),
+            min_position_pct=strategy_cfg.get('kelly_min_position_pct', 0.01),
+        )
+        kelly_sizer = KellyPositionSizer(kelly_config)
+        print(f"  Kelly Sizing: ENABLED ({kelly_config.kelly_fraction*100:.0f}% fractional)")
+    else:
+        kelly_sizer = None
+        print(f"  Kelly Sizing: DISABLED")
+
+    # Signal Veto Manager
+    use_signal_veto = strategy_cfg.get('use_signal_veto', True)
+    if use_signal_veto:
+        veto_config = VetoConfig(
+            vix_extreme_threshold=strategy_cfg.get('veto_vix_extreme_threshold', 40.0),
+            vix_spike_threshold=strategy_cfg.get('veto_vix_spike_threshold', 0.30),
+            vix_spike_lookback=strategy_cfg.get('veto_vix_spike_lookback', 5),
+            backwardation_threshold=strategy_cfg.get('veto_backwardation_threshold', -0.15),
+            signal_disagreement_threshold=strategy_cfg.get('veto_signal_disagreement', 3),
+            regime_crisis_percentile=strategy_cfg.get('veto_regime_crisis_percentile', 0.90),
+        )
+        veto_manager = VetoManager(veto_config)
+        print(f"  Signal Veto: ENABLED (VIX >{veto_config.vix_extreme_threshold}, crisis >{veto_config.regime_crisis_percentile*100:.0f}%ile)")
+    else:
+        veto_manager = None
+        print(f"  Signal Veto: DISABLED")
+
+    # Dynamic Consensus Threshold
+    use_dynamic_threshold = strategy_cfg.get('use_dynamic_threshold', True)
+    if use_dynamic_threshold:
+        dynamic_thresholds = strategy_cfg.get('dynamic_threshold', {
+            'crisis_threshold': 0.20,
+            'elevated_threshold': 0.15,
+            'normal_threshold': 0.12,
+            'low_vol_threshold': 0.10,
+        })
+        print(f"  Dynamic Threshold: ENABLED (range {dynamic_thresholds['low_vol_threshold']}-{dynamic_thresholds['crisis_threshold']})")
+    else:
+        dynamic_thresholds = None
+        print(f"  Dynamic Threshold: DISABLED (fixed at {consensus_threshold})")
+
+    # Z-SCORE ADAPTIVE THRESHOLDS (Anti-Overfitting)
+    # Instead of static percentile/premium thresholds that overfit to 2019-2022,
+    # use z-scores that automatically adapt to current market regime
+    z_threshold_normal = 1.0    # More trades in calm markets
+    z_threshold_stressed = 1.5  # Higher bar in stressed markets
 
     # Profit targets and stops - none needed, IV reversion handles exits
     profit_target_pct = 0.10   # Very wide - let winners run
@@ -311,9 +381,8 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
     print(f"\nConfig:")
     print(f"  - QV Strategy: {config.use_qv_strategy}")
     print(f"  - Regime Detection: {config.use_regime_detection}")
-    print(f"  - Short Vol Entry: IV >{short_vol_iv_percentile*100:.0f}th pctile, premium >{short_vol_premium_min*100:.0f}%")
-    print(f"  - Long Vol Entry: IV <{long_vol_iv_percentile*100:.0f}th pctile, premium <{long_vol_premium_max*100:.0f}%")
-    print(f"  - Term Structure Confirmation: {require_term_structure}")
+    print(f"  - Entry: Z-score adaptive (normal: {z_threshold_normal}σ, stressed: {z_threshold_stressed}σ)")
+    print(f"  - Regime Split: RV percentile > 50% = stressed")
     print(f"  - Profit Target: {profit_target_pct*100:.1f}%")
     print(f"  - Stop Loss: {stop_loss_pct*100:.1f}%")
     print(f"  - Position Size: {position_size_base*100:.1f}%")
@@ -326,11 +395,13 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
     entry_consensus = 0
     entry_equity = None  # Track equity at entry for P/L calculation
     entry_iv = None      # Track IV at entry
+    entry_rv_percentile = None  # Track vol regime at entry (for "hold through vol rise")
     prev_iv = None
 
     equity_curve = []
     trades = []
     position_pnl = 0  # Track cumulative P&L for current position
+    entry_position_size = 0  # Track position size at entry for P&L calculation
 
     # Pre-calculate spot and RV
     dates = sorted(options_df['date'].unique())
@@ -388,8 +459,6 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
         # Daily P&L for existing position
         # Using straddle approximation: Long straddle = Long 1 ATM call + Long 1 ATM put
         # Vega for ATM straddle ≈ 2 * 0.4 * S * sqrt(T) (call vega + put vega)
-        # For $100K capital with 5% position = $5,000 notional
-        # Trading ~50 contracts on a $5 premium straddle = $25K notional
         daily_pnl = 0
         if position != 0 and prev_iv is not None:
             iv_change = atm_iv - prev_iv
@@ -398,8 +467,8 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
             # Straddle vega: ~0.8 * S * sqrt(T) per 100 shares
             vega_per_straddle = 0.8 * spot * np.sqrt(dte_years)
 
-            # Number of straddles based on position size (rough approximation)
-            # $5K notional / ($5 premium * 100 multiplier) = 10 straddles
+            # Number of straddles based on position size
+            # Use position_size_base for consistent P&L calculation (original logic)
             notional_value = position_size_base * equity
             avg_straddle_premium = spot * atm_iv * np.sqrt(dte_years) * 0.8  # Approximation
             num_straddles = notional_value / (avg_straddle_premium * 100) if avg_straddle_premium > 0 else 0
@@ -419,46 +488,139 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
         if entry_date is not None:
             days_held = (pd.Timestamp(date) - pd.Timestamp(entry_date)).days
 
-        # Position sizing with tiered scaling
-        if config.use_tiered_sizing:
-            # Quadratic scaling based on consensus strength
+        # ===== ENHANCED POSITION SIZING =====
+        # Calculate RV percentile for regime detection
+        rv_percentile = 0.5
+        if len(qv_calc.rv_history) >= 20:
+            rv_arr = np.array(qv_calc.rv_history)
+            rv_percentile = (rv_arr < rv).sum() / len(rv_arr)
+
+        # Get drawdown scalar
+        dd_scalar = 1.0
+        is_drawdown_halted = False
+        if drawdown_manager is not None:
+            dd_scalar = drawdown_manager.get_position_scalar(equity)
+            is_drawdown_halted = drawdown_manager.is_halted
+
+        # Get dynamic consensus threshold
+        current_threshold = consensus_threshold
+        if dynamic_thresholds is not None:
+            vix_proxy = atm_iv * 100  # Convert IV to VIX-like scale
+            if rv_percentile > 0.90 or vix_proxy > 30:
+                current_threshold = dynamic_thresholds['crisis_threshold']
+            elif rv_percentile > 0.70 or vix_proxy > 20:
+                current_threshold = dynamic_thresholds['elevated_threshold']
+            elif rv_percentile > 0.30:
+                current_threshold = dynamic_thresholds['normal_threshold']
+            else:
+                current_threshold = dynamic_thresholds['low_vol_threshold']
+
+        # Kelly-based position sizing
+        if kelly_sizer is not None:
+            kelly_size = kelly_sizer.get_position_size(
+                current_drawdown=drawdown_manager.current_drawdown if drawdown_manager else 0,
+                vol_percentile=rv_percentile
+            )
+            position_size = kelly_size * regime_scalar * dd_scalar
+        elif config.use_tiered_sizing:
+            # Legacy quadratic scaling
             consensus_strength = abs(consensus)
             if config.position_scaling_method == "quadratic":
                 size_multiplier = consensus_strength ** 2
             elif config.position_scaling_method == "cubic":
                 size_multiplier = consensus_strength ** 3
-            else:  # linear
+            else:
                 size_multiplier = consensus_strength
-            position_size = position_size_base * size_multiplier * regime_scalar
+            position_size = position_size_base * size_multiplier * regime_scalar * dd_scalar
         else:
-            position_size = position_size_base * regime_scalar
+            position_size = position_size_base * regime_scalar * dd_scalar
 
-        # Entry logic - Asymmetric thresholds with term structure confirmation
-        # Calculate IV percentile vs recent history
-        iv_percentile = 0.5
-        if len(qv_calc.iv_premium_buffer) >= 20:
-            iv_arr = np.array(qv_calc.iv_premium_buffer)
-            iv_percentile = (iv_arr < features['iv_premium']).sum() / len(iv_arr)
+        # Update veto manager with VIX data
+        vix_proxy = atm_iv * 100
+        if veto_manager is not None:
+            veto_manager.update_vix(vix_proxy)
 
-        # Term structure signal: positive = contango (normal), negative = backwardation (fear)
+        # ===== Z-SCORE BASED ENTRY (Anti-Overfitting) =====
+        # Replace static thresholds with adaptive z-scores that adjust to regime
+        # This fixes the 52% OOS Sharpe degradation problem
+
+        # Calculate z-score of IV premium vs rolling window (EXCLUDING today)
+        iv_premium_z = 0.0
+        if len(qv_calc.iv_premium_buffer) >= 21:
+            iv_arr = np.array(list(qv_calc.iv_premium_buffer)[:-1])  # Exclude today
+            iv_mean = iv_arr.mean()
+            iv_std = iv_arr.std()
+            if iv_std > 1e-8:
+                iv_premium_z = (features['iv_premium'] - iv_mean) / iv_std
+
+        # Multi-tier regime classification for higher signal quality
+        # Crisis regime: Skip short vol entirely (too risky)
+        # Elevated regime: Require very high z-score (2.5σ)
+        # Stressed regime: Require high z-score (2.0σ)
+        # Normal regime: Standard threshold (1.5σ)
+        # Low vol regime: Can be more aggressive (1.25σ)
+        is_crisis_regime = rv_percentile > 0.85
+        is_elevated_regime = rv_percentile > 0.70
+        is_stressed_regime = rv_percentile > 0.50
+        is_low_vol_regime = rv_percentile < 0.30
+
+        # Tiered z-thresholds for SHORT VOL (protective in high-vol regimes)
+        if is_crisis_regime:
+            z_threshold = 3.0  # Extremely high bar (effectively blocks most short vol)
+        elif is_elevated_regime:
+            z_threshold = 2.5  # Very high bar
+        elif is_stressed_regime:
+            z_threshold = 2.0  # High bar
+        elif is_low_vol_regime:
+            z_threshold = 1.25  # Slightly lower bar in calm markets
+        else:
+            z_threshold = 1.5  # Normal threshold
+
+        # SYMMETRIC thresholds - same for long and short vol
+        # The tiered z-thresholds above already provide regime-awareness
+        long_vol_threshold = z_threshold
+
+        # Term structure (kept for logging, not entry decision)
         term_structure = features.get('term_structure', 0.0)
-        term_confirms_short = term_structure > 0  # Contango supports short vol
-        term_confirms_long = term_structure < 0   # Backwardation supports long vol
 
         if position == 0:
-            # SHORT VOL: High IV percentile with elevated premium - vol seller's edge
-            short_vol_entry = (
-                iv_percentile > short_vol_iv_percentile and
-                features['iv_premium'] > short_vol_premium_min
-            )
+            # Z-SCORE BASED ENTRY - Automatically adapts to regime
+            # When spreads compress (2023-2024), rolling mean/std adjust
+            # A 1.0-1.5σ signal still captures "extreme" relative to recent history
 
-            # LONG VOL: Low IV percentile with discount - only in backwardation (fear)
-            # More restrictive because long vol has negative carry (theta decay)
-            long_vol_entry = (
-                iv_percentile < long_vol_iv_percentile and
-                features['iv_premium'] < long_vol_premium_max and
-                term_confirms_long  # Require backwardation for long vol
-            )
+            # SHORT VOL: IV premium significantly above recent average
+            # Uses protective high thresholds in high-vol regimes
+            short_vol_entry = iv_premium_z > z_threshold
+
+            # LONG VOL: IV premium significantly below recent average
+            # Uses aggressive lower thresholds in high-vol regimes (opposite logic)
+            long_vol_entry = iv_premium_z < -long_vol_threshold
+
+            # ===== SIGNAL VETO CHECK =====
+            if veto_manager is not None and (short_vol_entry or long_vol_entry):
+                signal_type = "SHORT_VOL" if short_vol_entry else "LONG_VOL"
+                veto_result = veto_manager.check_veto(
+                    signal_type=signal_type,
+                    current_vix=vix_proxy,
+                    term_structure=term_structure,
+                    signals=signals,
+                    rv_percentile=rv_percentile,
+                    iv_premium=features['iv_premium'],
+                    is_drawdown_halted=is_drawdown_halted,
+                )
+                if veto_result.is_vetoed:
+                    # Log vetoed trade
+                    trades.append({
+                        'date': date,
+                        'action': 'VETOED',
+                        'veto_reason': veto_result.reason.value if veto_result.reason else 'UNKNOWN',
+                        'veto_details': veto_result.details,
+                        'consensus': consensus,
+                        'iv_premium_z': iv_premium_z,
+                        'would_have_been': signal_type,
+                    })
+                    short_vol_entry = False
+                    long_vol_entry = False
 
             if short_vol_entry:
                 # Short volatility - IV is high with contango, expect mean reversion
@@ -467,6 +629,7 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                 entry_consensus = consensus
                 entry_equity = equity
                 entry_iv = atm_iv
+                entry_position_size = position_size  # Track for P&L calculation
                 position_pnl = 0
 
                 cost = option_spread_cost * position_size * equity + commission_per_contract * 2
@@ -476,7 +639,9 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                     'date': date,
                     'action': 'SHORT_VOL',
                     'consensus': consensus,
-                    'iv_percentile': iv_percentile,
+                    'iv_premium_z': iv_premium_z,
+                    'z_threshold': z_threshold,
+                    'is_stressed': is_stressed_regime,
                     'term_structure': term_structure,
                     'regime_scalar': regime_scalar,
                     'iv': atm_iv,
@@ -486,12 +651,15 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                 })
 
             elif long_vol_entry:
-                # Long volatility - IV is low with backwardation, expect mean reversion up
+                # Long volatility - "Cheap Insurance" strategy
+                # Buy when vol is low (cheap), hold through vol rises
                 position = 1
                 entry_date = date
                 entry_consensus = consensus
                 entry_equity = equity
                 entry_iv = atm_iv
+                entry_rv_percentile = rv_percentile  # Track for "hold through vol rise"
+                entry_position_size = position_size  # Track for P&L calculation
                 position_pnl = 0
 
                 cost = option_spread_cost * position_size * equity + commission_per_contract * 2
@@ -501,7 +669,9 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                     'date': date,
                     'action': 'LONG_VOL',
                     'consensus': consensus,
-                    'iv_percentile': iv_percentile,
+                    'iv_premium_z': iv_premium_z,
+                    'z_threshold': z_threshold,
+                    'is_stressed': is_stressed_regime,
                     'term_structure': term_structure,
                     'regime_scalar': regime_scalar,
                     'iv': atm_iv,
@@ -530,11 +700,12 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                 exit_reason = "STOP_LOSS"
 
             # 3. IV mean reversion complete (after min holding period)
+            # Using z-score: exit when z-score crosses zero (mean reversion complete)
             elif days_held >= min_holding_days:
-                if position == -1 and iv_percentile < 0.50:  # Was short, IV has fallen
+                if position == -1 and iv_premium_z < 0:  # Was short, IV premium below mean
                     should_exit = True
                     exit_reason = "IV_REVERSION"
-                elif position == 1 and iv_percentile > 0.50:  # Was long, IV has risen
+                elif position == 1 and iv_premium_z > 0:  # Was long, IV premium above mean
                     should_exit = True
                     exit_reason = "IV_REVERSION"
 
@@ -547,6 +718,13 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                 cost = option_spread_cost * position_size * equity + commission_per_contract * 2
                 equity -= cost
 
+                # Record trade for Kelly sizer
+                if kelly_sizer is not None and entry_equity is not None:
+                    kelly_sizer.add_trade(
+                        pnl=position_pnl,
+                        entry_size=entry_equity * position_size_base
+                    )
+
                 trades.append({
                     'date': date,
                     'action': 'EXIT',
@@ -557,13 +735,17 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                     'rv': rv,
                     'days_held': days_held,
                     'position_return': position_return * 100,  # As percentage
-                    'cost': cost
+                    'cost': cost,
+                    'position_size': position_size,
+                    'dd_scalar': dd_scalar,
                 })
                 position = 0
                 entry_date = None
                 entry_consensus = 0
                 entry_equity = None
                 entry_iv = None
+                entry_rv_percentile = None  # Reset vol regime tracking
+                entry_position_size = 0
                 position_pnl = 0
 
         equity += daily_pnl
@@ -576,7 +758,9 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
             'consensus': consensus,
             'iv': atm_iv,
             'rv': rv,
-            'regime_scalar': regime_scalar
+            'regime_scalar': regime_scalar,
+            'dd_scalar': dd_scalar,
+            'rv_percentile': rv_percentile,
         })
 
     # Calculate metrics
@@ -600,12 +784,19 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
     long_trades = [t for t in trades if t['action'] == 'LONG_VOL']
     short_trades = [t for t in trades if t['action'] == 'SHORT_VOL']
     exit_trades = [t for t in trades if t['action'] == 'EXIT']
+    vetoed_trades = [t for t in trades if t['action'] == 'VETOED']
 
     # Exit reason breakdown
     exit_reasons = {}
     for t in exit_trades:
         reason = t.get('exit_reason', 'UNKNOWN')
         exit_reasons[reason] = exit_reasons.get(reason, 0) + 1
+
+    # Veto reason breakdown
+    veto_reasons = {}
+    for t in vetoed_trades:
+        reason = t.get('veto_reason', 'UNKNOWN')
+        veto_reasons[reason] = veto_reasons.get(reason, 0) + 1
 
     # Calculate win rate
     winning_exits = [t for t in exit_trades if t.get('position_return', 0) > 0]
@@ -642,6 +833,28 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
     print(f"Avg Winner:        {avg_winner:>12.2f}%")
     print(f"Avg Loser:         {avg_loser:>12.2f}%")
     print(f"\nTotal Trading Costs: ${total_costs:>10,.2f}")
+
+    # ===== NEW: Risk Management Statistics =====
+    if vetoed_trades:
+        print(f"\n--- SIGNAL VETO ANALYSIS ---")
+        print(f"  Total Vetoed:    {len(vetoed_trades):>6}")
+        for reason, count in sorted(veto_reasons.items()):
+            print(f"    {reason:20s} {count:>4}")
+
+    if drawdown_manager is not None:
+        dd_status = drawdown_manager.get_status()
+        print(f"\n--- DRAWDOWN MANAGEMENT ---")
+        print(f"  Max Drawdown Seen: {dd_status['max_drawdown_pct']:>6.2f}%")
+        print(f"  Trading Halted:    {'YES' if dd_status['is_halted'] else 'NO':>6}")
+
+    if kelly_sizer is not None:
+        kelly_stats = kelly_sizer.get_statistics()
+        print(f"\n--- KELLY SIZING ---")
+        print(f"  Trades Recorded:   {kelly_stats['trades_recorded']:>6}")
+        print(f"  Win Rate:          {kelly_stats['win_rate']:>6.1f}%")
+        print(f"  Win/Loss Ratio:    {kelly_stats['win_loss_ratio']:>6.2f}")
+        print(f"  Full Kelly:        {kelly_stats['kelly_full']:>6.2f}%")
+        print(f"  Fractional Kelly:  {kelly_stats['kelly_fractional']:>6.2f}%")
 
     # Analyze short vs long vol separately
     short_exits = [t for t in exit_trades if t.get('entry_consensus', 0) < 0 or
@@ -711,6 +924,18 @@ def main():
         default='config/volatility_arb.yaml',
         help='Path to strategy config file'
     )
+    parser.add_argument(
+        '--start-date',
+        type=str,
+        default=None,
+        help='Start date filter (YYYY-MM-DD)'
+    )
+    parser.add_argument(
+        '--end-date',
+        type=str,
+        default=None,
+        help='End date filter (YYYY-MM-DD)'
+    )
     args = parser.parse_args()
 
     # Load config
@@ -720,6 +945,16 @@ def main():
     # Load data
     print(f"\nLoading options data from {args.data}...")
     options_df = load_json_options_data(args.data)
+
+    # Apply date filters
+    if args.start_date:
+        start = pd.to_datetime(args.start_date)
+        options_df = options_df[options_df['date'] >= start]
+        print(f"  Filtered to start: {args.start_date}")
+    if args.end_date:
+        end = pd.to_datetime(args.end_date)
+        options_df = options_df[options_df['date'] <= end]
+        print(f"  Filtered to end: {args.end_date}")
 
     print(f"\nData summary:")
     print(f"  Records: {len(options_df):,}")

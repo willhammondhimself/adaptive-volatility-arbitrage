@@ -1,0 +1,81 @@
+# MCPT (Monte Carlo Permutation Testing) Configuration
+# =====================================================
+#
+# This configuration controls the MCPT validation for volatility arbitrage
+# strategies. MCPT tests whether strategy performance is statistically
+# significant or could be due to random chance / data mining.
+#
+# Based on methodology from Timothy Masters' "Permutation and Randomization
+# Tests for Trading System Development".
+
+mcpt:
+  # Permutation settings
+  # --------------------
+  # Number of permutations for in-sample test
+  # More permutations = more precise p-value, but longer runtime
+  # Recommendations:
+  #   - Quick test: 100 (~10 minutes)
+  #   - Standard: 1000 (~1-2 hours)
+  #   - Publication quality: 5000 (~6-10 hours)
+  n_permutations: 1000
+
+  # Number of permutations for walk-forward test (per fold)
+  # Fewer than in-sample because we have multiple folds
+  n_permutations_walkforward: 200
+
+  # Significance thresholds
+  # -----------------------
+  # p-value threshold for "PASS" (strong evidence)
+  significance_level: 0.01
+
+  # p-value threshold for "MARGINAL" (moderate evidence)
+  marginal_significance: 0.05
+
+  # Parallelization
+  # ---------------
+  # Number of parallel workers
+  # -1 = use all available CPUs
+  # Reduce if you hit memory limits
+  n_jobs: -1
+
+  # Random seed for reproducibility
+  # Same seed = same permutation sequences
+  random_seed: 42
+
+  # Warmup period
+  # -------------
+  # Number of days to preserve at start of each permutation
+  # Should be >= your longest indicator lookback period
+  # For QV strategy with 60-day feature window + 20-day RV window = 80 days
+  warmup_days: 80
+
+  # Walk-forward settings
+  # ---------------------
+  # Training window size in trading days
+  # 252 days = 1 year, so 252*4 = 4 years
+  train_window_days: 1008  # 4 years
+
+  # Test window size in trading days
+  test_window_days: 252  # 1 year
+
+  # Step size between folds (retraining frequency)
+  # 30 days = approximately monthly retrain
+  retrain_days: 30
+
+  # Objectives to test
+  # ------------------
+  # List of metrics to compute p-values for
+  # Options: sharpe, nw_sharpe, profit_factor, win_rate, total_return
+  objectives:
+    - sharpe
+    - nw_sharpe
+    - profit_factor
+
+  # Interpretation guide
+  # --------------------
+  # p < 0.01  : PASS     - Strong evidence of genuine alpha
+  # p < 0.05  : MARGINAL - Moderate evidence, needs more testing
+  # p >= 0.05 : FAIL     - No evidence, likely noise or overfit
+  #
+  # Both in-sample AND walk-forward should pass for confidence.
+  # Walk-forward is more important as it tests out-of-sample performance.

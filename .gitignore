@@ -1,4 +1,4 @@
-# Byte-compiled / optimized / DLL files
+d# Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
@@ -134,6 +134,7 @@ cython_debug/
 .idea/
 .vscode/
 .claude/
+CLAUDE.md
 *.swp
 *.swo
 *~
