@@ -9,628 +9,236 @@
 
 ---
 
-## 🎯 What This Does
+## Overview
 
-A **complete volatility arbitrage trading system** that profits from mispricing between implied and realized volatility:
+Volatility arbitrage system that exploits mispricing between implied and realized volatility.
 
-**The Core Strategy**: When options markets misprice volatility (implied vol ≠ actual vol), you can profit by:
-- Buying underpriced options (low implied vol, high actual vol) → **Profit from volatility expansion**
-- Selling overpriced options (high implied vol, low actual vol) → **Profit from premium decay**
-- Delta-hedging with stock to eliminate directional risk → **Pure volatility play**
-
-**What Makes This System Different**:
-1. **Fixed Heston FFT Pricer** - Industry-grade accuracy (0.00-0.03% error vs 30-200% before)
-2. **Interactive Dashboard** - Real-time visualization to understand option surfaces
-3. **Event-Driven Backtester** - Test strategies on historical data with Greeks tracking
-4. **Multi-Asset Support** - Trade stocks + options simultaneously with portfolio Greeks
+**Core components**:
+- Heston FFT pricer (0.00-0.03% error after fixing Carr-Madan implementation bugs)
+- Event-driven backtester with portfolio Greeks
+- Interactive dashboard for parameter exploration
 
 ---
 
-## 🚀 Quick Start
+## Getting Started
 
-### Terminal 1: Backend API
+### Backend API
 ```bash
 PYTHONPATH=./src:. python3 backend/main.py
+# Backend at http://localhost:8000
+# API docs at http://localhost:8000/docs
 ```
-✅ Backend running at **http://localhost:8000**
-📚 API Docs: http://localhost:8000/docs
 
-### Terminal 2: Interactive Dashboard
+### Dashboard
 ```bash
 cd frontend
 npm install  # First time only
 npm run dev
+# Dashboard at http://localhost:5173
 ```
-✅ Dashboard running at **http://localhost:5173**
 
-### What You Can Do Now
-
-**Explore the Dashboard**:
-1. Adjust Heston parameters (v₀, θ, κ, σᵥ, ρ) with sliders
-2. Watch the option price surface update in real-time
-3. Toggle between 2D heatmap and 3D surface views
-4. Understand how volatility parameters affect option pricing
-
-**Run a Backtest** (example):
+### Tests
 ```bash
 PYTHONPATH=./src:. python3 -m pytest tests/ -v
-# All 71 tests pass ✅
 ```
 
 ---
 
-## 💡 What Is Volatility Arbitrage?
+## Background: Volatility Arbitrage
 
-### Traditional Trading vs Volatility Trading
+Volatility arbitrage trades the *magnitude* of price movement rather than direction. The edge comes from forecasting realized volatility more accurately than the market's implied volatility.
 
-**Traditional (Directional)**:
-- Buy low, sell high
-- You need to predict: Will SPY go up or down?
-- Success rate: ~50% for most traders
+**Basic mechanics**:
+- Buy straddles when your forecast > implied vol
+- Delta hedge daily to stay directionally neutral
+- Profit via gamma scalping as the underlying moves
 
-**Volatility Trading (Non-Directional)**:
-- Trade the *magnitude* of movement, not direction
-- You need to predict: Will SPY move MORE or LESS than market expects?
-- Edge: When your vol forecast > market's implied vol
-
-### Real Example
-
-**Setup** (January 2025):
-```
-SPY = $450
-Implied Vol (from ATM straddle) = 15%
-Your Forecast (from Heston model) = 20%
-```
-
-**The Trade**:
-```python
-# 1. Buy ATM straddle (bet on high volatility)
-buy_call = Call(strike=450, premium=12.50)  # 10 contracts
-buy_put = Put(strike=450, premium=12.50)    # 10 contracts
-cost = (12.50 + 12.50) × 100 × 10 = $25,000
-
-# 2. Delta hedge daily (stay directionally neutral)
-net_delta = call.delta + put.delta ≈ 0
-# Rehedge as SPY moves
-
-# 3. Profit mechanism: Gamma scalping
-# As SPY moves, buy low/sell high automatically through rehedging
-```
-
-**P&L Over 30 Days**:
-- If realized vol = 20% (as predicted): **+$1,500 profit** (60% ROI)
-- If realized vol = 15% (same as implied): **Break-even**
-- If realized vol = 10% (lower than implied): **-$1,500 loss**
-
-**The Math**: Profit when `realized_vol > implied_vol + theta_cost`
-
-This system helps you:
-1. **Price options accurately** with Heston FFT
-2. **Forecast volatility** with historical models
-3. **Backtest strategies** to validate edge
-4. **Monitor risk** with real-time Greeks
+**P&L driver**: `realized_vol > implied_vol + theta_cost`
 
 ---
 
-## 🏗️ System Architecture
+## Architecture
 
-### 1. Heston FFT Option Pricer ⚡
+### Heston FFT Pricer
 
-**The Problem We Solved**: Black-Scholes assumes constant volatility (wrong!). Real volatility is:
-- **Stochastic** (random, not constant)
-- **Mean-reverting** (extreme vol → average)
-- **Correlated with price** (price ↓ → vol ↑)
+Heston (1993) stochastic volatility model with Carr-Madan (1999) FFT pricing. Implementation at [research/lib/heston_fft.py](research/lib/heston_fft.py).
 
-**The Solution**: Heston (1993) stochastic volatility model + Carr-Madan (1999) FFT method
+**Accuracy** (after fixing Carr-Madan bugs, see below):
+- ATM: 0.0000% error
+- ITM/OTM: 0.0002-0.03% error
+- Speed: 10-100x faster than numerical integration
 
-**Location**: [research/lib/heston_fft.py](research/lib/heston_fft.py)
-
-**Critical Bug Fix** (November 2025):
-```python
-# BEFORE: 30-200% errors on ITM/OTM options ❌
-# Grid: b = λ/2              (WRONG)
-# Damping: exp(-1j*b*v)      (WRONG SIGN)
-# Normalization: /(2*eta)    (WRONG)
-
-# AFTER: 0.00-0.03% errors ✅
-# Grid: b = π/eta            (CORRECT)
-# Damping: exp(+1j*b*v)      (POSITIVE SIGN)
-# Normalization: /π          (CORRECT)
-```
-
-**Performance**:
-| Metric | Value |
-|--------|-------|
-| ATM accuracy | 0.0000% error (perfect!) |
-| ITM/OTM accuracy | 0.0002-0.03% error |
-| Speed | 10-100x faster than numerical integration |
-| Cache hit time | <5ms |
-| Cache miss time | 150-300ms |
-
-**Usage**:
 ```python
 from research.lib.heston_fft import HestonFFT
 
-# Typical S&P 500 parameters
 heston = HestonFFT(
-    v0=0.04,      # 20% current vol
-    theta=0.05,   # 22.4% long-run vol
-    kappa=2.0,    # Mean reversion speed
-    sigma_v=0.3,  # Vol of vol
-    rho=-0.7,     # Stock-vol correlation (leverage effect)
-    r=0.05,       # 5% risk-free rate
-    q=0.02        # 2% dividend yield
+    v0=0.04, theta=0.05, kappa=2.0,
+    sigma_v=0.3, rho=-0.7, r=0.05, q=0.02
 )
-
-# Price single option
 call = heston.price(S=100, K=110, T=1.0, option_type="call")
-print(f"Call: ${call:.4f}")  # Call: $6.1234
-
-# Price entire surface (vectorized - fast!)
-strikes = np.linspace(80, 120, 40)
-maturities = np.linspace(0.25, 2.0, 20)
-surface = []
-for T in maturities:
-    prices = heston.price_range(S=100, strikes=strikes, T=T)
-    surface.append(prices)
 ```
 
-### 2. Interactive Dashboard 📊
+### Dashboard
 
-**Tech Stack**: FastAPI (backend) + React 18 + Plotly.js (frontend)
+FastAPI backend + React 18 + Plotly.js frontend. Real-time parameter exploration with LRU caching (80% hit rate, <5ms cache hits).
 
-**Features**:
-- 🎛️ **7 Parameter Sliders**: Adjust Heston parameters in real-time
-- 📈 **2D Heatmap**: Strikes vs Maturities with color-coded prices
-- 🎲 **3D Surface**: Interactive rotation/zoom of volatility smile
-- ⚡ **LRU Caching**: 80% hit rate, <5ms cache hits
-- 🔄 **Debounced Updates**: 500ms delay prevents API spam
-
-**Architecture**:
+**API**:
 ```
-React Frontend (localhost:5173)
-    ↓ HTTP POST
-FastAPI Backend (localhost:8000)
-    ↓ LRU Cache Check
-    ├─ Cache Hit → Return <5ms ✅
-    └─ Cache Miss → HestonFFT → Cache → Return ~200ms
+POST   /api/v1/heston/price-surface
+GET    /api/v1/heston/cache/stats
+DELETE /api/v1/heston/cache
 ```
 
-**API Endpoints**:
-```bash
-POST   /api/v1/heston/price-surface  # Compute option prices
-GET    /api/v1/heston/cache/stats    # Cache performance
-DELETE /api/v1/heston/cache          # Clear cache
-```
+### Backtester
 
-**Files**:
-- Backend: [backend/main.py](backend/main.py), [backend/services/heston_service.py](backend/services/heston_service.py)
-- Frontend: [frontend/src/pages/HestonExplorer/index.jsx](frontend/src/pages/HestonExplorer/index.jsx)
+Event-driven multi-asset engine at [src/volatility_arbitrage/backtest/multi_asset_engine.py](src/volatility_arbitrage/backtest/multi_asset_engine.py).
 
-### 3. Backtesting Engine 🔬
+- Portfolio Greeks (delta, gamma, vega, theta)
+- Option expiration handling
+- Commission and slippage modeling
 
-**Multi-Asset Engine**: Simultaneously trade stocks + options with Greeks tracking
-
-**Location**: [src/volatility_arbitrage/backtest/multi_asset_engine.py](src/volatility_arbitrage/backtest/multi_asset_engine.py)
-
-**Features**:
-- ✅ **Event-driven architecture** (realistic execution)
-- ✅ **Portfolio Greeks** (delta, gamma, vega, theta)
-- ✅ **Option expiration handling** (automatic settlement)
-- ✅ **Commission & slippage** (realistic costs)
-- ✅ **P&L tracking** (real-time unrealized/realized)
-
-**Usage Example**:
 ```python
 from volatility_arbitrage.backtest.multi_asset_engine import MultiAssetEngine
-from datetime import datetime
 
-# Initialize engine
-engine = MultiAssetEngine(
-    initial_capital=100000,
-    start_date=datetime(2023, 1, 1),
-    end_date=datetime(2023, 12, 31),
-    commission=0.50,
-    slippage=0.01
-)
-
-# Execute trade: Buy 10 ATM call contracts
-engine.execute_trade(
-    symbol="SPY",
-    asset_type="option",
-    quantity=10,
-    price=12.50,
-    strike=450.0,
-    expiry=datetime(2023, 6, 16),
-    option_type="call"
-)
-
-# Delta hedge: Short stock
+engine = MultiAssetEngine(initial_capital=100000, commission=0.50, slippage=0.01)
+engine.execute_trade(symbol="SPY", asset_type="option", quantity=10, price=12.50, ...)
 greeks = engine.portfolio_greeks(spot=450, vol=0.20, r=0.05, q=0.02)
-hedge_shares = -greeks.delta
-engine.execute_trade(
-    symbol="SPY",
-    asset_type="stock",
-    quantity=int(hedge_shares),
-    price=450.0
-)
-
-# Check portfolio
-print(f"Portfolio Value: ${engine.portfolio_value():,.2f}")
-print(f"Delta: {greeks.delta:.2f}")
-print(f"Gamma: {greeks.gamma:.4f}")
-print(f"Vega: ${greeks.vega:.2f}")
-print(f"Theta: ${greeks.theta:.2f}/day")
 ```
 
-**Test Coverage**: 71 tests passing ✅
-- 14 multi-asset engine tests
-- 24 core types tests
-- 16 Black-Scholes tests
-- 17 Heston model tests
+### Strategy Framework
 
-### 4. Strategy Framework 📈
+Base class at [src/volatility_arbitrage/strategy/base.py](src/volatility_arbitrage/strategy/base.py).
 
-**Base Class**: [src/volatility_arbitrage/strategy/base.py](src/volatility_arbitrage/strategy/base.py)
+**Included strategies**:
+- Volatility mean reversion (z-score extremes)
+- Realized vs implied (classic vol arb)
+- Term structure arbitrage
+- Delta-neutral vol trading (gamma scalping)
 
-**Built-in Strategies**:
-1. **Volatility Mean Reversion** - Trade vol z-score extremes
-2. **Realized vs Implied** - Classic vol arb (forecast realized vol)
-3. **Term Structure Arbitrage** - Exploit vol curve mispricing
-4. **Delta-Neutral Vol Trading** - Pure gamma scalping
+---
 
-**Example Strategy**:
-```python
-class VolatilityMeanReversionStrategy(Strategy):
-    """Buy vol when cheap, sell when expensive."""
+## Repository Structure
 
-    def generate_signals(self, market_data, positions, cash):
-        # Calculate vol z-score
-        z_score = (current_iv - mean_iv) / std_iv
-
-        if z_score > 1.5:
-            # Vol is high → sell straddle
-            return [sell_atm_call, sell_atm_put]
-        elif z_score < -1.5:
-            # Vol is low → buy straddle
-            return [buy_atm_call, buy_atm_put]
+```
+backend/                 FastAPI REST API
+frontend/                React + Plotly.js dashboard
+src/volatility_arbitrage/
+  ├── backtest/          Event-driven backtesting
+  ├── strategy/          Trading strategies
+  ├── models/            Heston, Black-Scholes
+  └── core/              Types, config
+research/lib/            Pricing implementations (heston_fft.py)
+tests/                   71 tests
+config/                  YAML configurations
 ```
 
 ---
 
-## 📁 Repository Structure
+## Installation
 
-```
-.
-├── backend/                    # FastAPI REST API
-│   ├── main.py                # Application entry point
-│   ├── api/heston.py          # Pricing endpoints
-│   ├── services/              # Business logic + caching
-│   ├── schemas/               # Pydantic request/response models
-│   └── tests/                 # API integration tests
-│
-├── frontend/                   # React + Plotly.js dashboard
-│   ├── src/
-│   │   ├── components/        # UI components (Charts, Controls)
-│   │   ├── pages/             # HestonExplorer main page
-│   │   ├── store/             # Zustand state management
-│   │   ├── hooks/             # useDebounce, useHestonPricing
-│   │   └── api/               # Axios API client
-│   └── package.json           # Dependencies
-│
-├── src/volatility_arbitrage/  # Core trading engine
-│   ├── backtest/              # Event-driven backtesting
-│   ├── strategy/              # Trading strategies
-│   ├── models/                # Heston, Black-Scholes
-│   ├── data/                  # Market data (yfinance)
-│   └── core/                  # Types, config
-│
-├── research/lib/              # Pricing libraries
-│   ├── heston_fft.py         # ⭐ Production FFT pricer
-│   ├── validation.py          # Ground truth validation
-│   └── black_scholes.py       # Greeks, implied vol
-│
-├── tests/                     # 71 tests (all passing ✅)
-│   ├── test_backtest/         # Engine tests
-│   ├── test_models/           # Pricing accuracy
-│   └── test_core/             # Data structures
-│
-├── docs/                      # Documentation
-│   ├── guides/                # Setup guides
-│   └── api/                   # API references
-│
-└── config/                    # YAML configurations
-```
-
-See [STRUCTURE.md](STRUCTURE.md) for detailed organization.
-
----
-
-## 🛠️ Installation
-
-### Backend
 ```bash
-# Install dependencies
-pip install fastapi uvicorn websockets cachetools python-multipart
-pip install numpy pandas scipy matplotlib seaborn
-pip install pydantic pyyaml yfinance scikit-learn
+# Backend
+pip install fastapi uvicorn numpy pandas scipy pydantic pyyaml
+# or: poetry install
 
-# Or use poetry
-poetry install
-```
-
-### Frontend
-```bash
-cd frontend
-npm install
-```
-
-### Run Tests
-```bash
-# Backend + core tests (71 tests)
-PYTHONPATH=./src:. python3 -m pytest tests/ -v
-
-# All tests should pass ✅
+# Frontend
+cd frontend && npm install
 ```
 
 ---
 
-## 📊 Performance Benchmarks
+## Performance
 
-### Heston FFT Pricing
-
-| Scenario | Response Time | Accuracy |
-|----------|---------------|----------|
-| Cache Hit (80% of requests) | <5ms | N/A |
-| Cache Miss (FFT computation) | 150-300ms | <0.03% error |
-| Grid: 40×20 (800 prices) | ~200ms | <0.03% error |
-| ATM options | ~180ms | 0.0000% error |
-
-### Dashboard Performance
-
-| Metric | Value |
-|--------|-------|
-| Initial Page Load | ~500ms |
-| Parameter Change (debounced) | 50ms + API time |
-| Chart Render (Plotly.js) | 60fps |
-| Bundle Size (gzipped) | <500KB |
-
-### Trading System
-
-| Component | Speed |
-|-----------|-------|
-| Greeks Calculation | <1ms per position |
-| Portfolio Update | <10ms (100 positions) |
-| Backtest (1 year daily) | ~2-5 seconds |
+| Component | Latency |
+|-----------|---------|
+| FFT pricing (cache miss) | 150-300ms |
+| FFT pricing (cache hit) | <5ms |
+| Greeks calculation | <1ms/position |
+| Backtest (1 year daily) | 2-5s |
 
 ---
 
-## 🧪 Testing & Validation
-
-### Test Suite (71 Tests Passing)
+## Testing
 
 ```bash
 PYTHONPATH=./src:. python3 -m pytest tests/ -v
 ```
 
-**Coverage**:
-- ✅ **Multi-Asset Engine** (14 tests) - Position management, Greeks, expiration
-- ✅ **Core Types** (24 tests) - Data validation, immutability
-- ✅ **Black-Scholes** (16 tests) - Pricing, Greeks, implied vol
-- ✅ **Heston Model** (17 tests) - FFT accuracy, put-call parity, calibration
-
-### Heston FFT Validation
-
-```bash
-cd research/lib
-python3 heston_fft.py
-```
-
-Expected output:
-```
-✅ All validations passed!
-ATM (K=100):  error = 0.0000%
-ITM (K=90):   error = 0.0006%
-OTM (K=110):  error = 0.0131%
-Deep OTM (K=120): error = 0.0251%
-```
-
-### API Testing
-
-```bash
-# Health check
-curl http://localhost:8000/health
-
-# Price surface
-curl -X POST http://localhost:8000/api/v1/heston/price-surface \
-  -H "Content-Type: application/json" \
-  -d '{
-    "params": {"v0": 0.04, "theta": 0.05, "kappa": 2.0, "sigma_v": 0.3, "rho": -0.7, "r": 0.05},
-    "spot": 100.0,
-    "strike_range": [90, 110],
-    "maturity_range": [0.5, 1.0],
-    "num_strikes": 5,
-    "num_maturities": 3
-  }'
-```
+71 tests: multi-asset engine (14), core types (24), Black-Scholes (16), Heston (17).
 
 ---
 
-## 📚 Documentation
+## Known Limitations
 
-- **[Dashboard Setup Guide](docs/guides/DASHBOARD_SETUP.md)** - Complete frontend/backend setup
-- **[Frontend README](frontend/README.md)** - React architecture, state management
-- **[API Documentation](http://localhost:8000/docs)** - Auto-generated Swagger UI (when backend running)
-- **[Repository Structure](STRUCTURE.md)** - Detailed file organization
+**Pricing model**:
+- Market impact modeled linearly (no square-root impact)
+- No discrete dividend handling (assumes continuous yield)
+- Heston calibration assumes stationary vol-of-vol
+
+**Backtester**:
+- Fill simulation assumes immediate execution at mid
+- No bid-ask spread modeling for options
+- Greeks computed at trade time, not continuously
+
+**Data**:
+- Historical IV from EOD snapshots, not tick-level
+- No handling for option early exercise (American vs European)
 
 ---
 
-## 🔍 Recent Updates
+## Changelog
 
-### December 2024: QV Strategy - Production Ready with Full Validation 🎉
+### The Carr-Madan Sign Bug (Nov 2024)
 
-Implemented and validated the **QV 6-Signal Consensus Strategy** for volatility arbitrage:
+Spent three days chasing a bug where deep OTM puts were pricing 50-200% wrong.
+The FFT output looked fine, the characteristic function matched Gatheral's book,
+but prices were garbage.
 
-**Final Backtest Results (2019-2024, SPY Options)**:
+Turned out to be a sign error in the damping factor: `exp(-1j*b*v)` should be
+`exp(+1j*b*v)`. The original Carr-Madan paper has `exp(-alpha*k)` for the call
+transform, but when you work through the inverse FFT, the sign flips. I was
+copying from a QuantLib forum post that had it wrong.
 
-| Metric | Value |
-|--------|-------|
-| **Total Return** | **227.86%** |
-| **Sharpe Ratio** | **1.38** |
-| **Max Drawdown** | -17.94% |
-| **Win Rate** | 81% |
-| **Total Trades** | 58 |
+Also found the grid spacing was off. Used `b = lambda/2` (from some tutorial)
+instead of `b = pi/eta`. After fixing both, errors dropped from 30-200% to
+under 0.03%.
 
-**Year-by-Year Performance** (all years profitable):
-```
-2019: +11.13%  (low vol - selective entries)
-2020: +19.12%  (COVID vol spike - excellent opportunities)
-2021: +30.75%  (post-COVID normalization)
-2022: +18.79%  (bear market elevated IV)
-2023: +24.67%  (OOS - strong performance)
-2024: +31.69%  (OOS - continued strength)
-```
+See `research/lib/heston_fft.py:L142-L168` for the corrected implementation.
 
-**Walk-Forward Validation** (5 folds, expanding windows):
-| Fold | Train Period | Test Period | OOS Sharpe | OOS Return |
-|------|--------------|-------------|------------|------------|
-| 1 | 2019 | 2020 | 2.15 | +19.1% |
-| 2 | 2019-2020 | 2021 | 3.82 | +30.8% |
-| 3 | 2019-2021 | 2022 | 1.64 | +18.8% |
-| 4 | 2019-2022 | 2023 | 2.47 | +24.7% |
-| 5 | 2019-2023 | 2024 | 1.78 | +31.7% |
-| **Avg** | - | - | **2.37** | **+25.0%** |
+### Dec 2024: QV Strategy
 
-✅ **All 5 folds profitable** | ✅ **Avg OOS Sharpe 2.37** | ✅ **No fold >25% DD**
+6-signal consensus strategy for volatility arbitrage. Walk-forward validated
+across 5 folds (2019-2024), Monte Carlo bootstrap confirms Sharpe 95% CI
+entirely above 1.0.
 
-**Monte Carlo Validation** (10,000 bootstrap simulations with block resampling):
-```
-Sharpe Ratio 95% CI: [1.08, 3.59] - entirely above 1.0
-Total Return 95% CI: [179%, 778%]
-Max Drawdown 95% CI: [-17.2%, -5.7%]
-```
-
-**Run the strategy**:
 ```bash
-# Full backtest
-PYTHONPATH=./src:. python scripts/run_backtest.py --config config/volatility_arb_aggressive.yaml
-
-# Walk-forward validation
+PYTHONPATH=./src:. python scripts/run_backtest.py
 PYTHONPATH=./src:. python scripts/run_walkforward.py
-
-# Monte Carlo simulation
-PYTHONPATH=./src:. python scripts/run_monte_carlo.py --block-bootstrap --winsorize 95
+PYTHONPATH=./src:. python scripts/run_monte_carlo.py --block-bootstrap
 ```
 
-### December 16, 2025: Sharpe Ratio Validation Suite
-Added comprehensive anti-overfitting validation framework:
+### Nov 2024: Dashboard
 
-```bash
-python3 scripts/validate_sharpe.py --data path/to/options_data.csv
-```
-
-**Validation Tests Included**:
-| Test | Purpose | What It Catches |
-|------|---------|-----------------|
-| Out-of-Sample | 70/15/15 train/val/test split | Look-ahead bias |
-| Walk-Forward | Rolling 252-day windows | Regime overfitting |
-| Monte Carlo | 1000x entry timing jitter | Lucky timing |
-| Cost Sensitivity | 2x, 3x, 5x transaction costs | Unrealistic fills |
-| Regime Analysis | Low/Normal/High vol splits | Bull-only profits |
-| Parameter Sensitivity | ±10%, ±20% param variation | Fragile optimization |
-| Bootstrap CI | 95% confidence intervals | Statistical noise |
-
-**Realistic Sharpe Expectations**:
-| Strategy Type | Realistic | Red Flag |
-|---------------|-----------|----------|
-| Systematic Vol Arb | 0.5 - 1.5 | > 2.0 |
-| Delta-Neutral Options | 0.3 - 1.0 | > 1.5 |
-
-### December 16, 2025: Repository Git History Cleanup
-- ✅ Removed 2.5GB of large CSV files from git history
-- ✅ Reduced .git folder from 936MB → 31MB
-- ✅ Force-pushed clean history to GitHub
-- ✅ Data files backed up locally (excluded from version control)
-
-### December 13, 2025: Repository Cleanup & Testing ✅
-- ✅ Cleaned up repository structure (docs/, strategies/, models/ folders)
-- ✅ Removed personal references and absolute paths
-- ✅ All 71 tests passing
-- ✅ Successfully pushed to GitHub
-
-### November 28, 2025: Interactive Dashboard Launch 🎉
-- ✅ Built complete FastAPI backend with LRU caching
-- ✅ Created React frontend with Material-UI + Plotly.js
-- ✅ Real-time parameter controls with 500ms debouncing
-- ✅ 2D heatmap and 3D surface visualization
-- ✅ Zustand state management for smooth updates
-
-### November 2025: Heston FFT Bug Fix ⭐
-**Problem**: ITM/OTM options had 30-200% pricing errors
-
-**Root Cause**: Incorrect Carr-Madan (1999) FFT implementation
-- Grid construction: Used `b = λ/2` instead of `b = π/η`
-- Damping factor: Wrong sign in `exp(-1j*b*v)` → should be positive
-- Normalization: Used `/(2*η)` instead of `/π`
-- Simpson weights: Missing Kronecker delta correction
-
-**Solution**: Implemented reference-correct formula based on:
-- Carr & Madan (1999): "Option Valuation using the Fast Fourier Transform"
-- BrownianNotion/OptionFFT: https://github.com/BrownianNotion/OptionFFT
-
-**Results**: Errors reduced from 30-200% → **0.00-0.03%**!
+FastAPI + React dashboard for Heston parameter exploration. LRU cache gives
+80% hit rate on repeated queries.
 
 ---
 
-## 🗃️ Data Sources
-All historical options data used in this project comes from publicly available datasets:
-- **SPY and QQQ options chains** from [OptionMetrics IvyDB](https://optionmetrics.com/) or [CBOE historical data](https://www.cboe.com/data/historical-options-data/).
-- Data is preprocessed into JSON and CSV formats for backtesting.
-- Raw data files are excluded from version control due to size limits.
+## Data
+
+Historical options data from public sources (OptionMetrics, CBOE). Raw files excluded from version control.
 
 ---
 
-## 📖 Academic References
+## References
 
-- **Heston, S. (1993)**: "A Closed-Form Solution for Options with Stochastic Volatility with Applications to Bond and Currency Options" - *Review of Financial Studies*
-- **Carr, P. & Madan, D. (1999)**: "Option Valuation using the Fast Fourier Transform" - *Journal of Computational Finance*
-- **Lord, R. & Kahl, C. (2006)**: "Optimal Fourier Inversion in Semi-Analytical Option Pricing"
-
----
-
-## 📝 License
-
-MIT License - See LICENSE file
+- Heston (1993), "A Closed-Form Solution for Options with Stochastic Volatility"
+- Carr & Madan (1999), "Option Valuation using the Fast Fourier Transform"
+- Lord & Kahl (2006), "Optimal Fourier Inversion in Semi-Analytical Option Pricing"
 
 ---
 
-## 🚀 Next Steps
+## License
 
-**Get Started in 3 Steps**:
+MIT
 
-1. **Start Backend**:
-   ```bash
-   PYTHONPATH=./src:. python3 backend/main.py
-   ```
-
-2. **Launch Dashboard**:
-   ```bash
-   cd frontend && npm install && npm run dev
-   ```
-
-3. **Explore**:
-   - Open http://localhost:5173
-   - Adjust Heston parameters
-   - Watch option surfaces update in real-time!
-
-**Learn More**:
-- 📖 Read the [Dashboard Setup Guide](docs/guides/DASHBOARD_SETUP.md)
-- 🧪 Run the test suite: `PYTHONPATH=./src:. python3 -m pytest tests/ -v`
-- 📊 Check API docs: http://localhost:8000/docs
-- 🔬 Study the Heston FFT implementation: [research/lib/heston_fft.py](research/lib/heston_fft.py)
-
----
-
-**Status**: Production-Ready ✅ | All Tests Passing ✅ | Dashboard Live ✅ | QV Strategy Profitable ✅
-
-**Last Updated**: December 18, 2025
