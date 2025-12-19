@@ -224,12 +224,6 @@ strategy:
   rv_method: close_to_close        # Options: close_to_close, parkinson, garman_klass, yang_zhang, ensemble
   rv_use_ensemble: false           # Average multiple methods
 
-  # ===== PHASE 2: LEVERAGE =====
-  # Position leverage for amplified returns (higher risk)
-  use_leverage: true
-  short_vol_leverage: 1.15         # 1.15x leverage for short vol positions
-  long_vol_leverage: 1.5           # 1.5x leverage for long vol positions
-
   # Regime-Specific Parameters
   # Maps regime_id to entry/exit thresholds and position sizing
   # Regime 0: Low volatility - tighter thresholds, larger positions

@@ -1345,6 +1345,31 @@ class VolatilityArbitrageStrategy(Strategy):
 
         return days_held >= self.config.min_holding_days
 
+    def _get_leverage_multiplier(self, signal_direction: str) -> Decimal:
+        """
+        Get leverage multiplier based on signal direction.
+
+        Conservative asymmetric leverage:
+        - Short vol: 1.3x (limited upside, higher risk)
+        - Long vol: 2.0x (unlimited upside, defined risk)
+        - Neutral: 1.0x (no leverage on hedges)
+
+        Args:
+            signal_direction: "short_vol", "long_vol", or "neutral"
+
+        Returns:
+            Leverage multiplier as Decimal
+        """
+        if not self.config.use_leverage:
+            return Decimal("1.0")
+
+        if signal_direction == "short_vol":
+            return self.config.short_vol_leverage
+        elif signal_direction == "long_vol":
+            return self.config.long_vol_leverage
+        else:
+            return Decimal("1.0")
+
     def _calculate_qv_position_size(
         self,
         symbol: str,
@@ -1410,21 +1435,24 @@ class VolatilityArbitrageStrategy(Strategy):
         exposure: Decimal,
         account_equity: Decimal,
         underlying_price: Decimal,
-        option_delta: Decimal
+        option_delta: Decimal,
+        signal_direction: str = "neutral"
     ) -> int:
         """
-        Convert exposure scalar to option contract quantity.
+        Convert exposure scalar to option contract quantity with leverage support.
 
         Position Sizing:
         - Apply position_size_pct to limit capital at risk per trade
         - Then apply exposure scalar for directional adjustment
-        - Target Notional = position_size_pct × Account Equity × Exposure
+        - Apply leverage multiplier based on signal direction (Phase 2)
+        - Target Notional = position_size_pct × Account Equity × Exposure × Leverage
 
         Args:
             exposure: Exposure scalar (e.g., 1.0 = 100% of allocated capital)
             account_equity: Current account equity (cash)
             underlying_price: Current underlying price
             option_delta: Delta of selected option
+            signal_direction: "short_vol", "long_vol", or "neutral" (Phase 2)
 
         Returns:
             Number of contracts to trade
@@ -1433,8 +1461,11 @@ class VolatilityArbitrageStrategy(Strategy):
         # This prevents over-leveraging even with high exposure values
         position_capital = account_equity * (self.config.position_size_pct / Decimal("100"))
 
-        # Calculate target delta-adjusted notional using capped capital
-        target_delta_notional = exposure * position_capital
+        # Apply leverage multiplier (Phase 2)
+        leverage_multiplier = self._get_leverage_multiplier(signal_direction)
+
+        # Calculate target delta-adjusted notional WITH leverage
+        target_delta_notional = exposure * position_capital * leverage_multiplier
 
         # Each option contract controls 100 shares
         # Delta-adjusted notional = num_contracts * underlying_price * option_delta * 100
@@ -1538,7 +1569,8 @@ class VolatilityArbitrageStrategy(Strategy):
             exposure=exposure,
             account_equity=cash,
             underlying_price=option_chain.underlying_price,
-            option_delta=greeks.delta
+            option_delta=greeks.delta,
+            signal_direction="long_vol"  # Phase 2: Apply long vol leverage
         )
 
         if quantity > 0:
@@ -1604,7 +1636,8 @@ class VolatilityArbitrageStrategy(Strategy):
             exposure=abs(exposure),  # Magnitude only
             account_equity=cash,
             underlying_price=option_chain.underlying_price,
-            option_delta=greeks.delta
+            option_delta=greeks.delta,
+            signal_direction="short_vol"  # Phase 2: Apply short vol leverage
         )
 
         if quantity > 0:

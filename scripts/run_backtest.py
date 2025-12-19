@@ -864,6 +864,15 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                 vov_scalar = vov_generator.get_position_scalar(signal_type)
                 position_size *= vov_scalar
 
+            # ===== PHASE 2: APPLY LEVERAGE AT ENTRY =====
+            leverage_multiplier = 1.0
+            if config.use_leverage and (short_vol_entry or long_vol_entry):
+                if short_vol_entry:
+                    leverage_multiplier = float(config.short_vol_leverage)
+                elif long_vol_entry:
+                    leverage_multiplier = float(config.long_vol_leverage)
+                position_size *= leverage_multiplier
+
             if short_vol_entry:
                 # Short volatility - IV is high with contango, expect mean reversion
                 position = -1
@@ -890,6 +899,7 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                     'enhancement_scalar': enhancement_scalar,
                     'term_structure_leverage': term_structure_leverage,
                     'vov_scalar': vov_scalar if vov_generator else 1.0,
+                    'leverage_multiplier': leverage_multiplier,  # Phase 2
                     'iv': atm_iv,
                     'rv': rv,
                     'iv_premium': features['iv_premium'],
@@ -924,6 +934,7 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                     'enhancement_scalar': enhancement_scalar,
                     'term_structure_leverage': term_structure_leverage,
                     'vov_scalar': vov_scalar if vov_generator else 1.0,
+                    'leverage_multiplier': leverage_multiplier,  # Phase 2
                     'iv': atm_iv,
                     'rv': rv,
                     'iv_premium': features['iv_premium'],
@@ -1168,6 +1179,7 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
         'nw_sharpe': nw_sharpe,
         'max_drawdown': max_dd,
         'trades': len(trades),
+        'trade_log': trades,  # Full trade list for Monte Carlo
         'equity_curve': equity_df
     }
 

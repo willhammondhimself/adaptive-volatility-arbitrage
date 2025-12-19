@@ -103,6 +103,14 @@ class VolatilityArbitrageConfig:
     position_scaling_method: str = "quadratic"
     min_holding_days: int = 5
 
+    # Leverage Configuration (Phase 2)
+    use_leverage: bool = False
+    short_vol_leverage: Decimal = Decimal("1.3")
+    long_vol_leverage: Decimal = Decimal("2.0")
+    max_leveraged_notional_pct: Decimal = Decimal("0.80")
+    leverage_drawdown_reduction: bool = True
+    leverage_dd_threshold: Decimal = Decimal("0.10")
+
 
 class DataConfig(BaseModel):
     """Data fetching configuration."""
@@ -421,6 +429,14 @@ def load_strategy_config(config_path: Optional[Path] = None) -> VolatilityArbitr
         min_consensus_threshold=Decimal(str(strategy_data.get("min_consensus_threshold", 0.15))),
         position_scaling_method=strategy_data.get("position_scaling_method", "quadratic"),
         min_holding_days=strategy_data.get("min_holding_days", 5),
+
+        # Leverage Configuration (Phase 2)
+        use_leverage=strategy_data.get("use_leverage", False),
+        short_vol_leverage=Decimal(str(strategy_data.get("short_vol_leverage", 1.3))),
+        long_vol_leverage=Decimal(str(strategy_data.get("long_vol_leverage", 2.0))),
+        max_leveraged_notional_pct=Decimal(str(strategy_data.get("max_leveraged_notional_pct", 0.80))),
+        leverage_drawdown_reduction=strategy_data.get("leverage_drawdown_reduction", True),
+        leverage_dd_threshold=Decimal(str(strategy_data.get("leverage_dd_threshold", 0.10))),
     )
 
     return config

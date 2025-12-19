@@ -1,0 +1,245 @@
+# Volatility Arbitrage Strategy Configuration - PHASE 1
+# Enhancement Stack: Kelly + Drawdown Recovery + Asymmetric Targets
+# Target: Sharpe ~2.0, Return >250%
+
+data:
+  source: yahoo
+  cache_dir: data/cache
+  start_date: "2023-01-01"
+  end_date: "2024-01-01"
+  symbols:
+    - SPY
+
+backtest:
+  initial_capital: 100000.0
+  commission_rate: 0.0015
+  slippage: 0.001
+  position_size_pct: 0.05
+  max_positions: 5
+  risk_free_rate: 0.05
+
+strategy:
+  # Entry/Exit Thresholds
+  entry_threshold_pct: 5.0
+  exit_threshold_pct: 2.0
+
+  # Time Constraints
+  min_days_to_expiry: 14
+  max_days_to_expiry: 60
+
+  # Delta Hedging
+  delta_rebalance_threshold: 0.10
+  delta_target: 0.0
+
+  # Position Sizing - AGGRESSIVE
+  position_size_pct: 15.0
+  max_vega_exposure: 1500
+  max_positions: 8
+
+  # Volatility Forecasting
+  vol_lookback_period: 30
+  vol_forecast_method: "garch"
+
+  # Risk Management
+  max_loss_pct: 50.0
+
+  # ===== QV STRATEGY =====
+  use_qv_strategy: true
+
+  # QV Feature Windows
+  rv_window: 20
+  feature_window: 60
+  regime_window: 252
+
+  # QV Signal Thresholds
+  pc_ratio_threshold: 0.5
+  skew_threshold: 0.5
+  premium_threshold: 0.10
+  term_structure_threshold: 0.0
+  volume_spike_threshold: 1.0
+  sentiment_threshold: 0.5
+
+  # Consensus
+  consensus_threshold: 0.15
+
+  # Signal Weights - OPTIMIZED from signal accuracy analysis
+  weight_pc_ratio: 0.15           # Reduced: 31% hit rate
+  weight_iv_skew: 0.16            # Slightly reduced: 62% hit rate
+  weight_iv_premium: 0.24         # INCREASED: 87.5% hit rate (best)
+  weight_term_structure: 0.17     # Slightly increased: 50% hit rate
+  weight_volume_spike: 0.10       # REDUCED: 20% hit rate (worst)
+  weight_near_term_sentiment: 0.18  # Increased: 61% hit rate
+
+  # Regime Scalars - AGGRESSIVE
+  regime_crisis_scalar: 0.3
+  regime_elevated_scalar: 0.6
+  regime_normal_scalar: 1.0
+  regime_low_scalar: 1.5
+  regime_extreme_low_scalar: 2.0
+
+  # Base settings
+  base_long_bias: 0.0
+  signal_adjustment_factor: 1.0
+
+  # Tiered Position Sizing
+  use_tiered_sizing: true
+  min_consensus_threshold: 0.15
+  position_scaling_method: quadratic
+  min_holding_days: 5
+
+  # ===== PHASE 1 ENHANCEMENTS =====
+
+  # Dynamic Threshold - DISABLED for Phase 1
+  use_dynamic_threshold: false
+  dynamic_threshold:
+    crisis_threshold: 0.18
+    elevated_threshold: 0.15
+    normal_threshold: 0.12
+    low_vol_threshold: 0.10
+
+  # Drawdown Recovery - ENABLED
+  use_drawdown_recovery: true
+  drawdown_halt_threshold: 0.15
+  drawdown_thresholds:
+    - [0.03, 1.0]
+    - [0.06, 0.75]
+    - [0.09, 0.50]
+    - [0.12, 0.25]
+
+  # Kelly Criterion - ENABLED
+  use_kelly_sizing: true
+  kelly_fraction: 0.35
+  kelly_lookback_trades: 50
+  kelly_min_trades: 20
+  kelly_max_position_pct: 0.20
+  kelly_min_position_pct: 0.02
+
+  # Signal Veto - ENABLED
+  use_signal_veto: true
+  veto_vix_extreme_threshold: 40.0
+  veto_vix_spike_threshold: 0.50
+  veto_vix_spike_lookback: 5
+  veto_backwardation_threshold: -0.15
+  veto_signal_disagreement: 4
+  veto_regime_crisis_percentile: 0.90
+
+  # Greeks-Based Exit
+  use_greeks_exit: true
+  vega_profit_target_multiple: 2.0
+  theta_exit_threshold_pct: -0.03
+  delta_drift_exit_threshold: 0.30
+
+  # Gamma-Aware Rehedging
+  use_dynamic_delta_threshold: true
+  gamma_threshold_factor: 1.0
+  min_delta_threshold: 0.02
+  max_delta_threshold: 0.20
+
+  # Regime Detection
+  use_regime_detection: true
+  regime_lookback_period: 60
+  exit_on_regime_transition: false
+
+  # ===== DISABLED ENHANCEMENTS (for Phase 1) =====
+  use_regime_transition_signals: false
+  regime_transition:
+    low_regime_boundary: 0.30
+    high_regime_boundary: 0.70
+    transition_threshold: 0.10
+    signal_weight: 0.15
+
+  use_term_structure_leverage: false
+  term_structure_leverage:
+    max_leverage: 2.0
+    min_leverage: 0.25
+    steep_contango_threshold: 0.015
+    moderate_contango_threshold: 0.008
+    mild_contango_threshold: 0.003
+    steep_backwardation_threshold: -0.013
+    extreme_backwardation_threshold: -0.025
+    steep_contango_leverage: 2.0
+    moderate_contango_leverage: 1.5
+    mild_contango_leverage: 1.25
+    flat_leverage: 1.0
+    mild_backwardation_leverage: 1.0
+    moderate_backwardation_leverage: 0.75
+    steep_backwardation_leverage: 0.5
+    veto_on_extreme_backwardation: true
+
+  use_vov_signal: false
+  vov_signal:
+    lookback_days: 20
+    high_vov_threshold: 0.013
+    low_vov_threshold: 0.006
+    high_vov_long_scalar: 1.3
+    high_vov_short_scalar: 0.7
+    low_vov_short_scalar: 1.2
+    low_vov_long_scalar: 0.8
+
+  use_intraday_vol_decomposition: false
+  intraday_vol:
+    lookback_days: 20
+    overnight_dominant_threshold: 1.5
+    intraday_dominant_threshold: 0.67
+    overnight_dominant_scalar: 0.75
+    intraday_dominant_scalar: 1.1
+
+  use_dynamic_weighting: false
+  dynamic_weighting:
+    ema_decay: 0.95
+    min_weight: 0.05
+    max_weight: 0.40
+    min_samples_for_adaptation: 20
+    neutral_accuracy: 0.50
+
+  # Asymmetric Profit Taking - ENABLED
+  use_asymmetric_targets: true
+  asymmetric_targets:
+    short_vol_profit_target: 0.05
+    short_vol_stop_loss: -0.04
+    long_vol_profit_target: 0.08
+    long_vol_stop_loss: -0.03
+
+  rv_method: close_to_close
+  rv_use_ensemble: false
+
+  # Leverage
+  use_leverage: true
+  short_vol_leverage: 1.15
+  long_vol_leverage: 1.5
+
+  # Regime Parameters
+  regime_params:
+    0:
+      entry_threshold_pct: 3.0
+      exit_threshold_pct: 1.5
+      position_size_multiplier: 1.5
+      max_vega_multiplier: 1.5
+    1:
+      entry_threshold_pct: 5.0
+      exit_threshold_pct: 2.0
+      position_size_multiplier: 1.0
+      max_vega_multiplier: 1.0
+    2:
+      entry_threshold_pct: 8.0
+      exit_threshold_pct: 3.0
+      position_size_multiplier: 0.5
+      max_vega_multiplier: 0.5
+
+options:
+  min_volume: 10
+  min_open_interest: 50
+  max_spread_pct: 0.20
+
+volatility:
+  method: garch
+  lookback_period: 30
+  ewma_lambda: 0.94
+  garch_p: 1
+  garch_q: 1
+
+logging:
+  level: INFO
+  format: json
+  log_dir: logs
+  console_output: true
