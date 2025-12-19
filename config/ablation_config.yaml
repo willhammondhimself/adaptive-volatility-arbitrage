@@ -1,0 +1,107 @@
+# Ablation Study Configuration
+# Tests each enhancement independently against baseline
+
+ablation:
+  # MCPT settings
+  mcpt_permutations: 50  # Quick mode for initial exploration
+
+  # Output settings
+  output_dir: reports/ablation_study
+  save_individual_results: true
+
+  # Baseline - all enhancements disabled
+  baseline:
+    name: "Baseline (v1.0)"
+    description: "Original 6-signal QV strategy without enhancements"
+    config_overrides:
+      use_regime_transition_signals: false
+      use_term_structure_leverage: false
+      use_vov_signal: false
+      use_intraday_vol_decomposition: false
+      use_dynamic_weighting: false
+      use_asymmetric_targets: false
+      rv_method: close_to_close
+      rv_use_ensemble: false
+
+  # Variants - each enables ONE enhancement
+  variants:
+    - name: "E1: Regime Transitions"
+      description: "Add regime transition signals as 7th consensus signal"
+      config_overrides:
+        use_regime_transition_signals: true
+
+    - name: "E2: Term Structure Leverage"
+      description: "Scale position size by term structure slope (up to 2x)"
+      config_overrides:
+        use_term_structure_leverage: true
+
+    - name: "E3: Vol-of-Vol (VVIX)"
+      description: "Use estimated VVIX as position sizing modifier"
+      config_overrides:
+        use_vov_signal: true
+
+    - name: "E4: Intraday Vol Patterns"
+      description: "Decompose RV into overnight vs intraday components"
+      config_overrides:
+        use_intraday_vol_decomposition: true
+
+    - name: "E5: Dynamic Weighting"
+      description: "EMA-based adaptive signal weights"
+      config_overrides:
+        use_dynamic_weighting: true
+
+    - name: "E6: Asymmetric Profit"
+      description: "Different profit/loss targets for long vs short vol"
+      config_overrides:
+        use_asymmetric_targets: true
+
+    - name: "E7a: Parkinson RV"
+      description: "Use Parkinson (high-low range) RV estimator"
+      config_overrides:
+        rv_method: parkinson
+
+    - name: "E7b: Garman-Klass RV"
+      description: "Use Garman-Klass (OHLC) RV estimator"
+      config_overrides:
+        rv_method: garman_klass
+
+    - name: "E7c: Yang-Zhang RV"
+      description: "Use Yang-Zhang (overnight gaps) RV estimator"
+      config_overrides:
+        rv_method: yang_zhang
+
+    - name: "E7d: Ensemble RV"
+      description: "Average of all RV methods"
+      config_overrides:
+        rv_method: close_to_close
+        rv_use_ensemble: true
+
+  # Combined variants (test promising combinations)
+  combined_variants:
+    - name: "ALL: All Enhancements"
+      description: "All 7 enhancements enabled together"
+      config_overrides:
+        use_regime_transition_signals: true
+        use_term_structure_leverage: true
+        use_vov_signal: true
+        use_intraday_vol_decomposition: true
+        use_dynamic_weighting: true
+        use_asymmetric_targets: true
+        rv_method: yang_zhang
+
+    - name: "TOP3: Best Combination TBD"
+      description: "Top 3 performing enhancements (determined after initial ablation)"
+      config_overrides: {}  # Will be filled in after initial results
+
+# Metrics to track for each variant
+metrics:
+  primary:
+    - sharpe_ratio
+    - total_return_pct
+    - mcpt_pvalue
+  secondary:
+    - win_rate
+    - max_drawdown
+    - trade_count
+    - avg_trade_return
+    - profit_factor

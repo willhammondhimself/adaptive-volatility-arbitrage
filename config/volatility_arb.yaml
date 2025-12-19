@@ -142,6 +142,88 @@ strategy:
   regime_lookback_period: 60  # Days of returns for regime detection
   exit_on_regime_transition: false  # Exit all positions when regime changes
 
+  # ===== STRATEGY ENHANCEMENTS (ABLATION STUDY) =====
+  # Each enhancement can be toggled independently for ablation testing
+  # Set all to false to restore baseline v1.0
+
+  # Enhancement 1: Regime Transition Signals
+  # Detects vol regime CHANGES (LOW→NORMAL, HIGH→NORMAL) as 7th signal
+  use_regime_transition_signals: false
+  regime_transition:
+    low_regime_boundary: 0.30      # Below 30th percentile = low vol
+    high_regime_boundary: 0.70     # Above 70th percentile = high vol
+    transition_threshold: 0.10     # 10 percentile point change to trigger
+    signal_weight: 0.15            # Weight when adding to 6-signal consensus
+
+  # Enhancement 2: Term Structure Leverage
+  # Scale position size based on IV term structure slope
+  # DATA-CALIBRATED: Term spread typically ranges -1.3% to +1.5% (P10-P90)
+  use_term_structure_leverage: false
+  term_structure_leverage:
+    max_leverage: 2.0              # Maximum leverage cap
+    min_leverage: 0.25             # Minimum leverage floor
+    steep_contango_threshold: 0.015     # >1.5% = steep contango (P90)
+    moderate_contango_threshold: 0.008  # 0.8-1.5% = moderate contango
+    mild_contango_threshold: 0.003      # 0.3-0.8% = mild contango
+    steep_backwardation_threshold: -0.013  # <-1.3% = steep backwardation (P10)
+    extreme_backwardation_threshold: -0.025  # <-2.5% = VETO trade (rare)
+    steep_contango_leverage: 2.0
+    moderate_contango_leverage: 1.5
+    mild_contango_leverage: 1.25
+    flat_leverage: 1.0
+    mild_backwardation_leverage: 1.0
+    moderate_backwardation_leverage: 0.75
+    steep_backwardation_leverage: 0.5
+    veto_on_extreme_backwardation: true
+
+  # Enhancement 3: Vol-of-Vol (VVIX) Integration
+  # Use estimated VVIX as position sizing modifier
+  # DATA-CALIBRATED: VoV typically ranges 0.6% to 1.3% (P25-P75)
+  use_vov_signal: false
+  vov_signal:
+    lookback_days: 20              # Days to calculate IV volatility
+    high_vov_threshold: 0.013      # VoV > 1.3% = high vol-of-vol (P75)
+    low_vov_threshold: 0.006       # VoV < 0.6% = low vol-of-vol (P25)
+    high_vov_long_scalar: 1.3      # Boost long vol when VoV high
+    high_vov_short_scalar: 0.7     # Reduce short vol when VoV high
+    low_vov_short_scalar: 1.2      # Boost short vol when VoV low
+    low_vov_long_scalar: 0.8       # Reduce long vol when VoV low
+
+  # Enhancement 4: Intraday Volatility Patterns
+  # Decompose RV into overnight vs intraday components
+  use_intraday_vol_decomposition: false
+  intraday_vol:
+    lookback_days: 20              # Days for decomposition calculation
+    overnight_dominant_threshold: 1.5   # Overnight/Intraday > 1.5 = news-driven
+    intraday_dominant_threshold: 0.67   # Overnight/Intraday < 0.67 = orderly
+    overnight_dominant_scalar: 0.75     # Reduce size when overnight dominant
+    intraday_dominant_scalar: 1.1       # Boost size when intraday dominant
+
+  # Enhancement 5: Dynamic Signal Weighting (ML Ensemble)
+  # Adapt signal weights based on recent accuracy (EMA)
+  use_dynamic_weighting: false
+  dynamic_weighting:
+    ema_decay: 0.95                # EMA decay factor (0.95 = slow adaptation)
+    min_weight: 0.05               # Minimum weight per signal (5%)
+    max_weight: 0.40               # Maximum weight per signal (40%)
+    min_samples_for_adaptation: 20 # Trades before enabling adaptation
+    neutral_accuracy: 0.50         # Accuracy that maps to neutral weight
+
+  # Enhancement 6: Asymmetric Profit Taking
+  # Different profit targets and stop losses for long vs short vol
+  # Targets calibrated to actual trade return distribution (exits via IV_REVERSION happen at ~2-5%)
+  use_asymmetric_targets: false
+  asymmetric_targets:
+    short_vol_profit_target: 0.03   # +3% profit target for short vol (was 8%)
+    short_vol_stop_loss: -0.06      # -6% stop loss for short vol (was -15%)
+    long_vol_profit_target: 0.05    # +5% profit target for long vol (was 20%)
+    long_vol_stop_loss: -0.04       # -4% stop loss for long vol (was -8%)
+
+  # Enhancement 7: Alternative RV Methods
+  # Use more efficient RV estimators (Parkinson, Garman-Klass, Yang-Zhang)
+  rv_method: close_to_close        # Options: close_to_close, parkinson, garman_klass, yang_zhang, ensemble
+  rv_use_ensemble: false           # Average multiple methods
+
   # Regime-Specific Parameters
   # Maps regime_id to entry/exit thresholds and position sizing
   # Regime 0: Low volatility - tighter thresholds, larger positions

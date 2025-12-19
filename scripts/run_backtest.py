@@ -23,6 +23,17 @@ from volatility_arbitrage.risk.drawdown_manager import DrawdownManager, Drawdown
 from volatility_arbitrage.risk.position_sizing import KellyPositionSizer, KellyConfig
 from volatility_arbitrage.strategy.veto_manager import VetoManager, VetoConfig
 
+# Strategy Enhancements (Ablation Study)
+from volatility_arbitrage.strategy.enhancements import (
+    RegimeTransitionConfig, RegimeTransitionSignal, integrate_regime_signal,
+    TermStructureLeverageConfig, TermStructureLeverageCalculator,
+    VoVConfig, VoVSignalGenerator,
+    IntradayVolConfig, IntradayVolCalculator,
+    DynamicWeightingConfig, DynamicSignalWeighter, SignalOutcome,
+    AsymmetricProfitConfig, AsymmetricProfitManager,
+)
+from volatility_arbitrage.strategy.enhancements.alt_rv_methods import calculate_rv, ensemble_rv
+
 
 def load_json_options_data(data_dir: str) -> pd.DataFrame:
     """Load JSON options data from directory."""
@@ -276,7 +287,7 @@ class QVSignalCalculator:
             return float(self.config.regime_extreme_low_scalar)
 
 
-def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 100000):
+def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 100000, config_path: str = None):
     """
     Run QV 6-signal consensus backtest with improved entry/exit logic.
 
@@ -285,6 +296,12 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
     2. Term structure confirmation (contango = sell vol, backwardation = buy vol)
     3. Profit targets and trailing stops
     4. Regime-aware position sizing
+
+    Args:
+        options_df: Options data
+        config: Strategy config object
+        initial_capital: Starting capital
+        config_path: Path to YAML config file (optional, uses config._config_path if available)
     """
     print("\n" + "="*60)
     print("QV ENHANCED STRATEGY BACKTEST (v2.0 - Risk Management)")
@@ -300,8 +317,13 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
 
     # ===== NEW: Initialize Risk Management Components =====
     # Load raw YAML for new risk management parameters (not in dataclass yet)
+    # Use provided config_path, or try to get from config object, or default
     import yaml
-    with open('config/volatility_arb.yaml', 'r') as f:
+    if config_path is None and hasattr(config, '_config_path'):
+        config_path = config._config_path
+    if config_path is None:
+        config_path = 'config/volatility_arb.yaml'
+    with open(config_path, 'r') as f:
         raw_config = yaml.safe_load(f)
     strategy_cfg = raw_config.get('strategy', {})
 
@@ -368,6 +390,138 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
         dynamic_thresholds = None
         print(f"  Dynamic Threshold: DISABLED (fixed at {consensus_threshold})")
 
+    # ===== STRATEGY ENHANCEMENTS (ABLATION STUDY) =====
+    # Enhancement 1: Regime Transition Signals
+    use_regime_transition = strategy_cfg.get('use_regime_transition_signals', False)
+    regime_transition_signal = None
+    if use_regime_transition:
+        rt_cfg = strategy_cfg.get('regime_transition', {})
+        regime_transition_config = RegimeTransitionConfig(
+            low_regime_boundary=rt_cfg.get('low_regime_boundary', 0.30),
+            high_regime_boundary=rt_cfg.get('high_regime_boundary', 0.70),
+            transition_threshold=rt_cfg.get('transition_threshold', 0.10),
+            signal_weight=rt_cfg.get('signal_weight', 0.15),
+        )
+        regime_transition_signal = RegimeTransitionSignal(regime_transition_config)
+        print(f"  E1 Regime Transition: ENABLED (weight={regime_transition_config.signal_weight})")
+    else:
+        print(f"  E1 Regime Transition: DISABLED")
+
+    # Enhancement 2: Term Structure Leverage
+    use_term_leverage = strategy_cfg.get('use_term_structure_leverage', False)
+    term_structure_calc = None
+    if use_term_leverage:
+        ts_cfg = strategy_cfg.get('term_structure_leverage', {})
+        term_structure_config = TermStructureLeverageConfig(
+            max_leverage=ts_cfg.get('max_leverage', 2.0),
+            min_leverage=ts_cfg.get('min_leverage', 0.25),
+            steep_contango_threshold=ts_cfg.get('steep_contango_threshold', 0.08),
+            steep_contango_leverage=ts_cfg.get('steep_contango_leverage', 2.0),
+            moderate_contango_leverage=ts_cfg.get('moderate_contango_leverage', 1.5),
+            veto_on_extreme_backwardation=ts_cfg.get('veto_on_extreme_backwardation', True),
+        )
+        term_structure_calc = TermStructureLeverageCalculator(term_structure_config)
+        print(f"  E2 Term Structure Leverage: ENABLED (max={term_structure_config.max_leverage}x)")
+    else:
+        print(f"  E2 Term Structure Leverage: DISABLED")
+
+    # Enhancement 3: Vol-of-Vol (VVIX) Signal
+    use_vov = strategy_cfg.get('use_vov_signal', False)
+    vov_generator = None
+    if use_vov:
+        vov_cfg = strategy_cfg.get('vov_signal', {})
+        vov_config = VoVConfig(
+            high_threshold=vov_cfg.get('high_vov_threshold', 0.50),
+            low_threshold=vov_cfg.get('low_vov_threshold', 0.25),
+            high_long_scalar=vov_cfg.get('high_vov_long_scalar', 1.3),
+            high_short_scalar=vov_cfg.get('high_vov_short_scalar', 0.7),
+            low_short_scalar=vov_cfg.get('low_vov_short_scalar', 1.2),
+            low_long_scalar=vov_cfg.get('low_vov_long_scalar', 0.8),
+            lookback_window=vov_cfg.get('lookback_days', 20),
+        )
+        vov_generator = VoVSignalGenerator(vov_config)
+        print(f"  E3 Vol-of-Vol (VVIX): ENABLED")
+    else:
+        print(f"  E3 Vol-of-Vol (VVIX): DISABLED")
+
+    # Enhancement 4: Intraday Volatility Patterns (requires OHLC data)
+    use_intraday_vol = strategy_cfg.get('use_intraday_vol_decomposition', False)
+    intraday_vol_calc = None
+    if use_intraday_vol:
+        # Check if OHLC data exists
+        ohlc_path = Path('data/spy_ohlc.csv')
+        if ohlc_path.exists():
+            iv_cfg = strategy_cfg.get('intraday_vol', {})
+            intraday_vol_config = IntradayVolConfig(
+                window=iv_cfg.get('lookback_days', 20),
+                overnight_dominant_threshold=iv_cfg.get('overnight_dominant_threshold', 1.5),
+                intraday_dominant_threshold=iv_cfg.get('intraday_dominant_threshold', 0.67),
+                overnight_dominant_scalar=iv_cfg.get('overnight_dominant_scalar', 0.75),
+                intraday_dominant_scalar=iv_cfg.get('intraday_dominant_scalar', 1.1),
+            )
+            intraday_vol_calc = IntradayVolCalculator(intraday_vol_config)
+            print(f"  E4 Intraday Vol Patterns: ENABLED (requires OHLC data)")
+        else:
+            print(f"  E4 Intraday Vol Patterns: DISABLED (no OHLC data at {ohlc_path})")
+    else:
+        print(f"  E4 Intraday Vol Patterns: DISABLED")
+
+    # Enhancement 5: Dynamic Signal Weighting
+    use_dynamic_weights = strategy_cfg.get('use_dynamic_weighting', False)
+    dynamic_weighter = None
+    if use_dynamic_weights:
+        dw_cfg = strategy_cfg.get('dynamic_weighting', {})
+        dynamic_weight_config = DynamicWeightingConfig(
+            ema_decay=dw_cfg.get('ema_decay', 0.95),
+            min_weight=dw_cfg.get('min_weight', 0.05),
+            max_weight=dw_cfg.get('max_weight', 0.40),
+            min_samples_for_adaptation=dw_cfg.get('min_samples_for_adaptation', 20),
+        )
+        dynamic_weighter = DynamicSignalWeighter(dynamic_weight_config)
+        print(f"  E5 Dynamic Weighting: ENABLED (min_samples={dynamic_weight_config.min_samples_for_adaptation})")
+    else:
+        print(f"  E5 Dynamic Weighting: DISABLED")
+
+    # Enhancement 6: Asymmetric Profit Taking
+    use_asymmetric = strategy_cfg.get('use_asymmetric_targets', False)
+    asymmetric_manager = None
+    if use_asymmetric:
+        ap_cfg = strategy_cfg.get('asymmetric_targets', {})
+        asymmetric_config = AsymmetricProfitConfig(
+            short_vol_profit_target=ap_cfg.get('short_vol_profit_target', 0.08),
+            short_vol_stop_loss=ap_cfg.get('short_vol_stop_loss', -0.15),
+            long_vol_profit_target=ap_cfg.get('long_vol_profit_target', 0.20),
+            long_vol_stop_loss=ap_cfg.get('long_vol_stop_loss', -0.08),
+        )
+        asymmetric_manager = AsymmetricProfitManager(asymmetric_config)
+        print(f"  E6 Asymmetric Targets: ENABLED (short: +{asymmetric_config.short_vol_profit_target*100:.0f}%/-{abs(asymmetric_config.short_vol_stop_loss)*100:.0f}%)")
+    else:
+        print(f"  E6 Asymmetric Targets: DISABLED")
+
+    # Enhancement 7: Alternative RV Methods
+    rv_method = strategy_cfg.get('rv_method', 'close_to_close')
+    rv_use_ensemble = strategy_cfg.get('rv_use_ensemble', False)
+    ohlc_df = None
+
+    # Load OHLC data if using alternative RV methods OR E4 intraday vol
+    needs_ohlc = (rv_method != 'close_to_close') or rv_use_ensemble or (intraday_vol_calc is not None)
+    if needs_ohlc:
+        ohlc_path = Path('data/spy_ohlc.csv')
+        if ohlc_path.exists():
+            ohlc_df = pd.read_csv(ohlc_path, parse_dates=['date'])
+            ohlc_df['date'] = ohlc_df['date'].dt.date
+            ohlc_df.set_index('date', inplace=True)
+            if rv_method != 'close_to_close':
+                print(f"  E7 RV Method: {rv_method.upper()} (OHLC data loaded: {len(ohlc_df)} days)")
+            else:
+                print(f"  E7 RV Method: CLOSE_TO_CLOSE (default)")
+        else:
+            print(f"  E7 RV Method: {rv_method} requested but no OHLC data at {ohlc_path}, falling back to close_to_close")
+            rv_method = 'close_to_close'
+            rv_use_ensemble = False
+    else:
+        print(f"  E7 RV Method: CLOSE_TO_CLOSE (default)")
+
     # Z-SCORE ADAPTIVE THRESHOLDS (Anti-Overfitting)
     # Instead of static percentile/premium thresholds that overfit to 2019-2022,
     # use z-scores that automatically adapt to current market regime
@@ -396,6 +550,7 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
     entry_equity = None  # Track equity at entry for P/L calculation
     entry_iv = None      # Track IV at entry
     entry_rv_percentile = None  # Track vol regime at entry (for "hold through vol rise")
+    entry_signals = {}  # E5: Track entry signals for dynamic weighting
     prev_iv = None
 
     equity_curve = []
@@ -425,7 +580,22 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
 
     spot_df = pd.DataFrame(spot_prices).set_index('date')
     spot_df['returns'] = spot_df['spot'].pct_change()
-    spot_df['rv_20d'] = spot_df['returns'].rolling(20).std() * np.sqrt(252)
+
+    # E7: Use alternative RV method if configured and OHLC data available
+    if ohlc_df is not None and (rv_method != 'close_to_close' or rv_use_ensemble):
+        # Calculate RV on full OHLC data, then align to spot_df
+        if rv_use_ensemble:
+            ohlc_rv = ensemble_rv(ohlc_df, window=20, annualize=True)
+            print(f"  E7: Applied ENSEMBLE RV ({spot_df.index.isin(ohlc_df.index).sum()} days with data)")
+        else:
+            ohlc_rv = calculate_rv(ohlc_df, method=rv_method, window=20, annualize=True)
+            print(f"  E7: Applied {rv_method} RV ({spot_df.index.isin(ohlc_df.index).sum()} days with data)")
+        # Align to spot_df dates
+        spot_df['rv_20d'] = ohlc_rv.reindex(spot_df.index).ffill()
+    else:
+        # Default: close-to-close RV
+        spot_df['rv_20d'] = spot_df['returns'].rolling(20).std() * np.sqrt(252)
+
     spot_df['rv_20d_lagged'] = spot_df['rv_20d'].shift(1)
 
     warmup_days = max(config.feature_window + 21, 80)  # Need 60+ days for QV buffers
@@ -467,9 +637,11 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
             # Straddle vega: ~0.8 * S * sqrt(T) per 100 shares
             vega_per_straddle = 0.8 * spot * np.sqrt(dte_years)
 
-            # Number of straddles based on position size
-            # Use position_size_base for consistent P&L calculation (original logic)
-            notional_value = position_size_base * equity
+            # Number of straddles based on position size at entry
+            # Use entry_position_size which includes enhancement scalars from trade entry
+            # This allows enhancements to actually affect P&L through position sizing
+            pnl_position_size = entry_position_size if entry_position_size > 0 else position_size_base
+            notional_value = pnl_position_size * entry_equity  # Use entry equity for consistent sizing
             avg_straddle_premium = spot * atm_iv * np.sqrt(dte_years) * 0.8  # Approximation
             num_straddles = notional_value / (avg_straddle_premium * 100) if avg_straddle_premium > 0 else 0
 
@@ -540,10 +712,7 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
         if veto_manager is not None:
             veto_manager.update_vix(vix_proxy)
 
-        # ===== Z-SCORE BASED ENTRY (Anti-Overfitting) =====
-        # Replace static thresholds with adaptive z-scores that adjust to regime
-        # This fixes the 52% OOS Sharpe degradation problem
-
+        # ===== Z-SCORE CALCULATION (needed for enhancements) =====
         # Calculate z-score of IV premium vs rolling window (EXCLUDING today)
         iv_premium_z = 0.0
         if len(qv_calc.iv_premium_buffer) >= 21:
@@ -552,6 +721,58 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
             iv_std = iv_arr.std()
             if iv_std > 1e-8:
                 iv_premium_z = (features['iv_premium'] - iv_mean) / iv_std
+
+        # ===== APPLY STRATEGY ENHANCEMENTS =====
+        enhancement_scalar = 1.0  # Combined enhancement position scalar
+        term_structure_leverage = 1.0
+        term_structure_veto = False
+        term_structure_veto_reason = None
+
+        # E1: Regime Transition Signal (position scalar based on favorable transitions)
+        regime_transition_value = 0
+        if regime_transition_signal is not None:
+            regime_transition_value = regime_transition_signal.update(rv_percentile)
+            # Apply as position scalar: boost on favorable transitions
+            # HIGH→NORMAL (+1) with short vol (iv_premium_z > 0) = favorable
+            # LOW→NORMAL (-1) with long vol (iv_premium_z < 0) = favorable
+            if regime_transition_value != 0:
+                signal_alignment = regime_transition_value * np.sign(iv_premium_z)
+                enhancement_scalar *= (1.0 + 0.25 * signal_alignment)
+
+        # E2: Term Structure Leverage
+        if term_structure_calc is not None:
+            # Get IV at different tenors (30d and 60d)
+            iv_30d = features.get('atm_iv', atm_iv)
+            # For 60d IV, use term_structure feature (which is iv_60 - iv_30)
+            iv_60d = iv_30d + features.get('term_structure', 0.0)
+            signal_direction = "SHORT_VOL" if iv_premium_z > 0 else "LONG_VOL"
+            term_structure_leverage, ts_regime, term_structure_veto, term_structure_veto_reason = \
+                term_structure_calc.get_leverage(iv_30d, iv_60d, signal_direction)
+            if not term_structure_veto:
+                enhancement_scalar *= term_structure_leverage
+
+        # E3: Vol-of-Vol (VVIX) Signal
+        vov_scalar = 1.0
+        if vov_generator is not None:
+            vov_generator.update_iv(atm_iv)
+            # Will apply scalar at entry based on position direction
+
+        # E4: Intraday Volatility Patterns (requires OHLC data)
+        intraday_scalar = 1.0
+        if intraday_vol_calc is not None and ohlc_df is not None and date in ohlc_df.index:
+            open_price = ohlc_df.loc[date, 'open']
+            close_price = ohlc_df.loc[date, 'close']
+            intraday_vol_calc.update(open_price, close_price)
+            intraday_scalar = intraday_vol_calc.get_position_scalar()
+            enhancement_scalar *= intraday_scalar
+
+        # Apply enhancement scalar to position size
+        position_size *= enhancement_scalar
+
+        # ===== Z-SCORE BASED ENTRY (Anti-Overfitting) =====
+        # Replace static thresholds with adaptive z-scores that adjust to regime
+        # This fixes the 52% OOS Sharpe degradation problem
+        # NOTE: iv_premium_z is already calculated above (before enhancements)
 
         # Multi-tier regime classification for higher signal quality
         # Crisis regime: Skip short vol entirely (too risky)
@@ -596,6 +817,21 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
             # Uses aggressive lower thresholds in high-vol regimes (opposite logic)
             long_vol_entry = iv_premium_z < -long_vol_threshold
 
+            # ===== E2: TERM STRUCTURE VETO CHECK =====
+            if term_structure_veto and (short_vol_entry or long_vol_entry):
+                signal_type = "SHORT_VOL" if short_vol_entry else "LONG_VOL"
+                trades.append({
+                    'date': date,
+                    'action': 'VETOED',
+                    'veto_reason': 'TERM_STRUCTURE_VETO',
+                    'veto_details': term_structure_veto_reason,
+                    'consensus': consensus,
+                    'iv_premium_z': iv_premium_z,
+                    'would_have_been': signal_type,
+                })
+                short_vol_entry = False
+                long_vol_entry = False
+
             # ===== SIGNAL VETO CHECK =====
             if veto_manager is not None and (short_vol_entry or long_vol_entry):
                 signal_type = "SHORT_VOL" if short_vol_entry else "LONG_VOL"
@@ -622,6 +858,12 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                     short_vol_entry = False
                     long_vol_entry = False
 
+            # ===== E3: APPLY VOV SCALAR AT ENTRY =====
+            if vov_generator is not None and (short_vol_entry or long_vol_entry):
+                signal_type = "SHORT_VOL" if short_vol_entry else "LONG_VOL"
+                vov_scalar = vov_generator.get_position_scalar(signal_type)
+                position_size *= vov_scalar
+
             if short_vol_entry:
                 # Short volatility - IV is high with contango, expect mean reversion
                 position = -1
@@ -630,6 +872,7 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                 entry_equity = equity
                 entry_iv = atm_iv
                 entry_position_size = position_size  # Track for P&L calculation
+                entry_signals = signals.copy()  # E5: Track signals for dynamic weighting
                 position_pnl = 0
 
                 cost = option_spread_cost * position_size * equity + commission_per_contract * 2
@@ -644,6 +887,9 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                     'is_stressed': is_stressed_regime,
                     'term_structure': term_structure,
                     'regime_scalar': regime_scalar,
+                    'enhancement_scalar': enhancement_scalar,
+                    'term_structure_leverage': term_structure_leverage,
+                    'vov_scalar': vov_scalar if vov_generator else 1.0,
                     'iv': atm_iv,
                     'rv': rv,
                     'iv_premium': features['iv_premium'],
@@ -660,6 +906,7 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                 entry_iv = atm_iv
                 entry_rv_percentile = rv_percentile  # Track for "hold through vol rise"
                 entry_position_size = position_size  # Track for P&L calculation
+                entry_signals = signals.copy()  # E5: Track signals for dynamic weighting
                 position_pnl = 0
 
                 cost = option_spread_cost * position_size * equity + commission_per_contract * 2
@@ -674,6 +921,9 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                     'is_stressed': is_stressed_regime,
                     'term_structure': term_structure,
                     'regime_scalar': regime_scalar,
+                    'enhancement_scalar': enhancement_scalar,
+                    'term_structure_leverage': term_structure_leverage,
+                    'vov_scalar': vov_scalar if vov_generator else 1.0,
                     'iv': atm_iv,
                     'rv': rv,
                     'iv_premium': features['iv_premium'],
@@ -689,13 +939,22 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
             position_pnl += daily_pnl
             position_return = position_pnl / entry_equity if entry_equity else 0
 
+            # ===== E6: ASYMMETRIC PROFIT TARGETS =====
+            # Get appropriate targets based on position direction
+            if asymmetric_manager is not None:
+                position_type = "SHORT_VOL" if position == -1 else "LONG_VOL"
+                current_profit_target, current_stop_loss = asymmetric_manager.get_targets(position_type)
+            else:
+                current_profit_target = profit_target_pct
+                current_stop_loss = stop_loss_pct
+
             # 1. Profit target hit
-            if position_return >= profit_target_pct:
+            if position_return >= current_profit_target:
                 should_exit = True
                 exit_reason = "PROFIT_TARGET"
 
             # 2. Stop loss hit
-            elif position_return <= stop_loss_pct:
+            elif position_return <= current_stop_loss:
                 should_exit = True
                 exit_reason = "STOP_LOSS"
 
@@ -725,6 +984,14 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                         entry_size=entry_equity * position_size_base
                     )
 
+                # E5: Record outcome for dynamic signal weighting (must be before position reset)
+                if dynamic_weighter is not None and entry_signals:
+                    dynamic_weighter.record_outcome(
+                        signals=entry_signals,
+                        actual_return=position_return,
+                        position_direction=position
+                    )
+
                 trades.append({
                     'date': date,
                     'action': 'EXIT',
@@ -746,6 +1013,7 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                 entry_iv = None
                 entry_rv_percentile = None  # Reset vol regime tracking
                 entry_position_size = 0
+                entry_signals = {}  # E5: Reset tracked signals
                 position_pnl = 0
 
         equity += daily_pnl
@@ -962,7 +1230,7 @@ def main():
     print(f"  Unique dates: {options_df['date'].nunique()}")
 
     # Run backtest
-    results = run_qv_backtest(options_df, config, args.capital)
+    results = run_qv_backtest(options_df, config, args.capital, config_path=args.config)
 
 
 if __name__ == "__main__":
