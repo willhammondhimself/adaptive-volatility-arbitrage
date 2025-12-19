@@ -1,0 +1,34 @@
+
+====================================================================================================
+ABLATION STUDY RESULTS
+====================================================================================================
+
+Variant                        |   Sharpe |  dSharpe |  Return% |  p-value |     Status
+----------------------------------------------------------------------------------------------------
+Baseline (v1.0)                |    0.608 |        - |      5.6 |      N/A |    SKIPPED
+----------------------------------------------------------------------------------------------------
+E1: Regime Transitions         |    0.610 |   +0.002 |      5.6 |      N/A |    SKIPPED
+E2: Term Structure Leverage    |    0.724 |   +0.116 |      6.7 |      N/A |    SKIPPED
+E3: Vol-of-Vol (VVIX)          |    0.408 |   -0.200 |      3.0 |      N/A |    SKIPPED
+E4: Intraday Vol Patterns      |    0.608 |   +0.000 |      5.6 |      N/A |    SKIPPED
+E5: Dynamic Weighting          |    0.608 |   +0.000 |      5.6 |      N/A |    SKIPPED
+E6: Asymmetric Profit          |    0.608 |   +0.000 |      5.6 |      N/A |    SKIPPED
+E7a: Parkinson RV              |    1.500 |   +0.892 |     14.6 |      N/A |    SKIPPED
+E7b: Garman-Klass RV           |    1.144 |   +0.536 |     14.3 |      N/A |    SKIPPED
+E7c: Yang-Zhang RV             |    1.190 |   +0.582 |     15.6 |      N/A |    SKIPPED
+E7d: Ensemble RV               |    1.198 |   +0.590 |     17.9 |      N/A |    SKIPPED
+====================================================================================================
+
+SUMMARY
+--------------------------------------------------
+Best Enhancement:  E7a: Parkinson RV         (Sharpe: 1.500, dSharpe: +0.892)
+Worst Enhancement: E3: Vol-of-Vol (VVIX)     (Sharpe: 0.408, dSharpe: -0.200)
+Enhancements that improved Sharpe: 6 / 10
+Statistically significant (p<0.05): 0 / 10
+
+INTERPRETATION:
+  dSharpe > 0: Enhancement IMPROVES performance
+  dSharpe < 0: Enhancement HURTS performance
+  p-value < 0.05: Strong evidence of alpha
+  p-value < 0.10: Marginal evidence
+  p-value >= 0.10: No evidence (likely noise)

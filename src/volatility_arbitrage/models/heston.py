@@ -396,6 +396,18 @@ class HestonCalibrator:
                     logger.debug(f"Invalid rho value: {params[4]}")
                     return 1e10  # Large penalty
 
+                # Enforce Feller condition: 2κθ > ξ²
+                # This ensures variance process stays positive
+                kappa, theta, xi = params[2], params[1], params[3]
+                feller_lhs = 2 * kappa * theta
+                feller_rhs = xi ** 2
+
+                if feller_lhs <= feller_rhs:
+                    logger.debug(
+                        f"Feller condition violated: 2κθ={feller_lhs:.4f} <= ξ²={feller_rhs:.4f}"
+                    )
+                    return 1e10  # Large penalty
+
                 # Create Heston parameters
                 heston_params = HestonParameters(
                     v0=Decimal(str(params[0])),

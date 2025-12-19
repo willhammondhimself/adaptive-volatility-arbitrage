@@ -1,0 +1,130 @@
+{
+  "timestamp": "2025-12-18T16:57:14.279673",
+  "baseline": {
+    "variant": "Baseline (v1.0)",
+    "sharpe": 0.6080350496165042,
+    "nw_sharpe": -2.522497042204198,
+    "total_return": 5.572898880728229,
+    "max_drawdown": -4.238526360641035,
+    "trades": 76,
+    "win_rate": 19.985974754558207,
+    "mcpt_pvalue": null,
+    "mcpt_status": "SKIPPED"
+  },
+  "variants": [
+    {
+      "variant": "E1: Regime Transitions",
+      "sharpe": 0.6102995493334923,
+      "nw_sharpe": -2.520399127964655,
+      "total_return": 5.59420538187126,
+      "max_drawdown": -4.23852635039901,
+      "trades": 76,
+      "win_rate": 19.985974754558207,
+      "mcpt_pvalue": null,
+      "mcpt_status": "SKIPPED"
+    },
+    {
+      "variant": "E2: Term Structure Leverage",
+      "sharpe": 0.7238649381122829,
+      "nw_sharpe": -2.3969325894159113,
+      "total_return": 6.705155809128148,
+      "max_drawdown": -4.238525893087938,
+      "trades": 76,
+      "win_rate": 20.05610098176718,
+      "mcpt_pvalue": null,
+      "mcpt_status": "SKIPPED"
+    },
+    {
+      "variant": "E3: Vol-of-Vol (VVIX)",
+      "sharpe": 0.4077010336797143,
+      "nw_sharpe": -3.1351373650778247,
+      "total_return": 3.0131982681003864,
+      "max_drawdown": -4.238527556293546,
+      "trades": 76,
+      "win_rate": 19.845722300140253,
+      "mcpt_pvalue": null,
+      "mcpt_status": "SKIPPED"
+    },
+    {
+      "variant": "E4: Intraday Vol Patterns",
+      "sharpe": 0.6080350496165042,
+      "nw_sharpe": -2.522497042204198,
+      "total_return": 5.572898880728229,
+      "max_drawdown": -4.238526360641035,
+      "trades": 76,
+      "win_rate": 19.985974754558207,
+      "mcpt_pvalue": null,
+      "mcpt_status": "SKIPPED"
+    },
+    {
+      "variant": "E5: Dynamic Weighting",
+      "sharpe": 0.6080350496165042,
+      "nw_sharpe": -2.522497042204198,
+      "total_return": 5.572898880728229,
+      "max_drawdown": -4.238526360641035,
+      "trades": 76,
+      "win_rate": 19.985974754558207,
+      "mcpt_pvalue": null,
+      "mcpt_status": "SKIPPED"
+    },
+    {
+      "variant": "E6: Asymmetric Profit",
+      "sharpe": 0.6080350496165042,
+      "nw_sharpe": -2.522497042204198,
+      "total_return": 5.572898880728229,
+      "max_drawdown": -4.238526360641035,
+      "trades": 76,
+      "win_rate": 19.985974754558207,
+      "mcpt_pvalue": null,
+      "mcpt_status": "SKIPPED"
+    },
+    {
+      "variant": "E7a: Parkinson RV",
+      "sharpe": 1.500336786956004,
+      "nw_sharpe": -1.5950739134097163,
+      "total_return": 14.613530953440002,
+      "max_drawdown": -1.1453163162448998,
+      "trades": 80,
+      "win_rate": 18.37307152875175,
+      "mcpt_pvalue": null,
+      "mcpt_status": "SKIPPED"
+    },
+    {
+      "variant": "E7b: Garman-Klass RV",
+      "sharpe": 1.1444134708338554,
+      "nw_sharpe": -1.2535094972123753,
+      "total_return": 14.316248319566496,
+      "max_drawdown": -2.409601058464934,
+      "trades": 78,
+      "win_rate": 17.11079943899018,
+      "mcpt_pvalue": null,
+      "mcpt_status": "SKIPPED"
+    },
+    {
+      "variant": "E7c: Yang-Zhang RV",
+      "sharpe": 1.1897466759502253,
+      "nw_sharpe": -1.1065648751355528,
+      "total_return": 15.632732259381473,
+      "max_drawdown": -1.9289562561646316,
+      "trades": 85,
+      "win_rate": 19.775596072931275,
+      "mcpt_pvalue": null,
+      "mcpt_status": "SKIPPED"
+    },
+    {
+      "variant": "E7d: Ensemble RV",
+      "sharpe": 1.1983822648336935,
+      "nw_sharpe": -0.8402068909313317,
+      "total_return": 17.89433963174578,
+      "max_drawdown": -1.928955839552178,
+      "trades": 85,
+      "win_rate": 18.723702664796633,
+      "mcpt_pvalue": null,
+      "mcpt_status": "SKIPPED"
+    }
+  ],
+  "config": {
+    "mcpt_permutations": 50,
+    "data_path": "src/volatility_arbitrage/data/SPY_Options_2019_24"
+  }
+}
