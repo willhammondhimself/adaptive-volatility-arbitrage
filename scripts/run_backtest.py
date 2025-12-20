@@ -598,7 +598,8 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
 
     spot_df['rv_20d_lagged'] = spot_df['rv_20d'].shift(1)
 
-    warmup_days = max(config.feature_window + 21, 80)  # Need 60+ days for QV buffers
+    # Reduced from 80 to 40 minimum - strategy now only needs 30 days for QV buffers
+    warmup_days = max(config.feature_window + 1, 40)
     print(f"Warmup period: {warmup_days} days")
 
     for i, date in enumerate(dates[warmup_days:], warmup_days):

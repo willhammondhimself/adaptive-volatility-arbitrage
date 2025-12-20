@@ -37,6 +37,27 @@ class VolatilityForecaster(ABC):
         """
         pass
 
+    def forecast_with_uncertainty(
+        self, returns: pd.Series, horizon: int = 1
+    ) -> dict[str, Decimal]:
+        """
+        Forecast volatility with epistemic uncertainty estimate.
+
+        Default implementation returns zero uncertainty (non-Bayesian models).
+        Override in subclasses that support uncertainty estimation.
+
+        Args:
+            returns: Time series of returns
+            horizon: Forecast horizon (days)
+
+        Returns:
+            Dictionary with 'mean_vol' and 'epistemic_uncertainty'
+        """
+        return {
+            "mean_vol": self.forecast(returns, horizon),
+            "epistemic_uncertainty": Decimal("0"),
+        }
+
 
 class HistoricalVolatility(VolatilityForecaster):
     """

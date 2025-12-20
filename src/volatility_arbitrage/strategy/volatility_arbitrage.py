@@ -20,6 +20,7 @@ import pandas as pd
 from volatility_arbitrage.core.types import OptionChain, OptionContract, Position, OptionType
 from volatility_arbitrage.models.black_scholes import BlackScholesModel
 from volatility_arbitrage.models.volatility import GARCHVolatility, calculate_returns
+from volatility_arbitrage.risk.uncertainty_sizing import UncertaintySizer, UncertaintySizingConfig
 from volatility_arbitrage.strategy.base import Strategy, Signal
 from volatility_arbitrage.utils.logging import get_logger
 
@@ -187,6 +188,26 @@ class VolatilityArbitrageConfig:
     position_scaling_method: str = "quadratic"  # linear, quadratic, cubic
     min_holding_days: int = 5  # Minimum days before exit allowed
 
+    # ===== PHASE 2: LEVERAGE =====
+    use_leverage: bool = False
+    short_vol_leverage: Decimal = Decimal("1.3")
+    long_vol_leverage: Decimal = Decimal("2.0")
+    max_leveraged_notional_pct: Decimal = Decimal("0.80")
+    leverage_drawdown_reduction: bool = True
+    leverage_dd_threshold: Decimal = Decimal("0.10")
+
+    # ===== PHASE 2: BAYESIAN LSTM VOLATILITY FORECASTING =====
+    bayesian_lstm_hidden_size: int = 64
+    bayesian_lstm_dropout_p: float = 0.2
+    bayesian_lstm_sequence_length: int = 20
+    bayesian_lstm_n_mc_samples: int = 50
+
+    # ===== PHASE 2: UNCERTAINTY-ADJUSTED POSITION SIZING =====
+    use_uncertainty_sizing: bool = False
+    uncertainty_penalty: float = 2.0
+    uncertainty_min_position_pct: float = 0.01
+    uncertainty_max_position_pct: float = 0.15
+
     def to_dict(self) -> dict:
         """Convert to dictionary."""
         base = {
@@ -236,9 +257,30 @@ class VolatilityArbitrageStrategy(Strategy):
         # Volatility forecaster
         if config.vol_forecast_method == "garch":
             self.vol_forecaster = GARCHVolatility(p=1, q=1)
+        elif config.vol_forecast_method == "bayesian_lstm":
+            from volatility_arbitrage.models.bayesian_forecaster import BayesianLSTMForecaster
+            self.vol_forecaster = BayesianLSTMForecaster(
+                hidden_size=config.bayesian_lstm_hidden_size,
+                dropout_p=config.bayesian_lstm_dropout_p,
+                sequence_length=config.bayesian_lstm_sequence_length,
+                n_mc_samples=config.bayesian_lstm_n_mc_samples,
+            )
         else:
             from volatility_arbitrage.models.volatility import HistoricalVolatility
             self.vol_forecaster = HistoricalVolatility(window=config.vol_lookback_period)
+
+        # Uncertainty-adjusted position sizing (Phase 2)
+        self._last_uncertainty: Decimal = Decimal("0")
+        if config.use_uncertainty_sizing:
+            self.uncertainty_sizer: Optional[UncertaintySizer] = UncertaintySizer(
+                UncertaintySizingConfig(
+                    uncertainty_penalty=config.uncertainty_penalty,
+                    min_position_pct=config.uncertainty_min_position_pct,
+                    max_position_pct=config.uncertainty_max_position_pct,
+                )
+            )
+        else:
+            self.uncertainty_sizer = None
 
         # Track price history for volatility forecasting
         self.price_history: dict[str, pd.Series] = {}
@@ -375,37 +417,37 @@ class VolatilityArbitrageStrategy(Strategy):
             if option_chain is None:
                 continue
 
-            # Calculate volatility spread
+            # Calculate volatility spread (may be None if insufficient price history)
             vol_spread = self._calculate_volatility_spread(
                 symbol, timestamp, option_chain
             )
-
-            if vol_spread is None:
-                continue
 
             # Get regime-specific parameters
             entry_threshold, exit_threshold, position_multiplier = self._get_regime_parameters(
                 self.current_regime
             )
 
-            # Check for entry signals (supports both legacy and QV strategies)
-            entry_signals = self._check_entry_signals(
-                timestamp=timestamp,
-                symbol=symbol,
-                option_chain=option_chain,
-                positions=positions,
-                cash=Decimal(str(cash)),
-                vol_spread=vol_spread,
-                entry_threshold=entry_threshold,
-                position_multiplier=position_multiplier
-            )
-            signals.extend(entry_signals)
+            # Check for entry signals
+            # QV strategy can run without vol_spread; legacy requires it
+            if self.config.use_qv_strategy or vol_spread is not None:
+                entry_signals = self._check_entry_signals(
+                    timestamp=timestamp,
+                    symbol=symbol,
+                    option_chain=option_chain,
+                    positions=positions,
+                    cash=Decimal(str(cash)),
+                    vol_spread=vol_spread,
+                    entry_threshold=entry_threshold,
+                    position_multiplier=position_multiplier
+                )
+                signals.extend(entry_signals)
 
-            # Check for exit signals
-            exit_signals = self._check_exit_signals(
-                vol_spread, positions, exit_threshold
-            )
-            signals.extend(exit_signals)
+            # Check for exit signals (requires vol_spread for legacy strategy)
+            if vol_spread is not None:
+                exit_signals = self._check_exit_signals(
+                    vol_spread, positions, exit_threshold
+                )
+                signals.extend(exit_signals)
 
             # Check for delta rebalancing
             rebalance_signals = self._check_delta_rebalancing(
@@ -461,9 +503,11 @@ class VolatilityArbitrageStrategy(Strategy):
         if len(returns) < self.config.vol_lookback_period:
             return None
 
-        # Forecast realized volatility
+        # Forecast realized volatility (with uncertainty if available)
         try:
-            forecasted_vol = self.vol_forecaster.forecast(returns, horizon=1)
+            forecast_result = self.vol_forecaster.forecast_with_uncertainty(returns, horizon=1)
+            forecasted_vol = forecast_result["mean_vol"]
+            self._last_uncertainty = forecast_result.get("epistemic_uncertainty", Decimal("0"))
         except Exception as e:
             logger.warning(f"Volatility forecast failed for {symbol}: {e}")
             return None
@@ -1193,39 +1237,43 @@ class VolatilityArbitrageStrategy(Strategy):
         signals: Dict[str, int] = {}
 
         # 1. PC Ratio Signal (Contrarian: High PC Ratio → Bullish)
-        # IMPROVEMENT: Lower threshold from 1.0σ to 0.5σ for more responsive signals
+        # Uses config threshold for z-score comparison
         pc_z = self._calculate_z_score(features['pc_ratio'], buffers.pc_ratio_60d)
-        if pc_z > Decimal("0.5"):  # High PC ratio (fear) → Bullish
+        pc_thresh = self.config.pc_ratio_threshold  # From config (e.g., 0.3)
+        if pc_z > pc_thresh:  # High PC ratio (fear) → Bullish
             signals['pc_ratio'] = 1
-        elif pc_z < Decimal("-0.5"):  # Low PC ratio (greed) → Bearish
+        elif pc_z < -pc_thresh:  # Low PC ratio (greed) → Bearish
             signals['pc_ratio'] = -1
         else:
             signals['pc_ratio'] = 0
 
         # 2. IV Skew Signal (Contrarian: High Skew → Bullish)
-        # IMPROVEMENT: Lower threshold from 1.0σ to 0.5σ for more responsive signals
+        # Uses config threshold for z-score comparison
         skew_z = self._calculate_z_score(features['iv_skew'], buffers.iv_skew_60d)
-        if skew_z > Decimal("0.5"):  # High skew (put premium) → Bullish
+        skew_thresh = self.config.skew_threshold  # From config (e.g., 0.3)
+        if skew_z > skew_thresh:  # High skew (put premium) → Bullish
             signals['iv_skew'] = 1
-        elif skew_z < Decimal("-0.5"):  # Low skew → Bearish
+        elif skew_z < -skew_thresh:  # Low skew → Bearish
             signals['iv_skew'] = -1
         else:
             signals['iv_skew'] = 0
 
         # 3. IV Percentile Signal (Contrarian: High IV Percentile → Bullish)
         # IV Percentile is already in 0.0-1.0 range from _extract_daily_features
-        # High percentile (>0.7) = IV expensive = fear overdone = Bullish
-        # Low percentile (<0.3) = IV cheap = complacency = Bearish
+        # Uses config threshold as offset from 0.5 neutral point
         iv_percentile = features['iv_premium']  # Now stores percentile 0.0-1.0
-        if iv_percentile > Decimal("0.70"):  # High IV percentile → Bullish (fear overdone)
+        prem_thresh = self.config.premium_threshold  # From config (e.g., 0.05)
+        high_pct = Decimal("0.5") + prem_thresh  # e.g., 0.55 with 0.05 threshold
+        low_pct = Decimal("0.5") - prem_thresh   # e.g., 0.45 with 0.05 threshold
+        if iv_percentile > high_pct:  # High IV percentile → Bullish (fear overdone)
             signals['iv_premium'] = 1
-        elif iv_percentile < Decimal("0.30"):  # Low IV percentile → Bearish (complacency)
+        elif iv_percentile < low_pct:  # Low IV percentile → Bearish (complacency)
             signals['iv_premium'] = -1
         else:
             signals['iv_premium'] = 0
 
         # 4. Term Structure Signal (Positive slope → Bullish)
-        # USER DECISION: Will be 0 if data unavailable
+        # Already uses config threshold
         if features['term_structure'] > self.config.term_structure_threshold:
             signals['term_structure'] = 1  # Upward sloping → Bullish
         elif features['term_structure'] < -self.config.term_structure_threshold:
@@ -1234,21 +1282,23 @@ class VolatilityArbitrageStrategy(Strategy):
             signals['term_structure'] = 0
 
         # 5. Volume Spike Signal (High volume → continuation)
-        # IMPROVEMENT: Lower threshold from 1.5σ to 1.0σ for more signal activity
+        # Uses config threshold for z-score comparison
         volume_z = self._calculate_z_score(features['volume_ratio'], buffers.volume_ratio_60d)
-        if volume_z > Decimal("1.0"):  # Unusual high volume
+        vol_thresh = self.config.volume_spike_threshold  # From config (e.g., 0.7)
+        if volume_z > vol_thresh:  # Unusual high volume
             signals['volume_spike'] = 1  # Assume bullish continuation
-        elif volume_z < Decimal("-0.5"):  # Unusually low volume
+        elif volume_z < -vol_thresh / 2:  # Unusually low volume (half threshold)
             signals['volume_spike'] = -1  # Bearish
         else:
             signals['volume_spike'] = 0
 
         # 6. Near-term Sentiment Signal (Negative → Bullish contrarian)
-        # IMPROVEMENT: Lower threshold from 1.0σ to 0.5σ for more responsive signals
+        # Uses config threshold for z-score comparison
         sentiment_z = self._calculate_z_score(features['near_term_sentiment'], buffers.near_term_sentiment_60d)
-        if sentiment_z < Decimal("-0.5"):  # Negative near-term sentiment → Bullish
+        sent_thresh = self.config.sentiment_threshold  # From config (e.g., 0.3)
+        if sentiment_z < -sent_thresh:  # Negative near-term sentiment → Bullish
             signals['near_term_sentiment'] = 1
-        elif sentiment_z > Decimal("0.5"):  # Positive near-term sentiment → Bearish
+        elif sentiment_z > sent_thresh:  # Positive near-term sentiment → Bearish
             signals['near_term_sentiment'] = -1
         else:
             signals['near_term_sentiment'] = 0
@@ -1442,13 +1492,13 @@ class VolatilityArbitrageStrategy(Strategy):
         Convert exposure scalar to option contract quantity with leverage support.
 
         Position Sizing:
-        - Apply position_size_pct to limit capital at risk per trade
-        - Then apply exposure scalar for directional adjustment
+        - Exposure represents target delta as fraction of equity (e.g., 0.5 = 50%)
         - Apply leverage multiplier based on signal direction (Phase 2)
-        - Target Notional = position_size_pct × Account Equity × Exposure × Leverage
+        - Cap at position_size_pct to prevent oversized single positions
+        - Target Notional = min(exposure, position_size_pct/100) × Account Equity × Leverage
 
         Args:
-            exposure: Exposure scalar (e.g., 1.0 = 100% of allocated capital)
+            exposure: Exposure scalar (target delta as fraction of equity, e.g., 0.5 = 50%)
             account_equity: Current account equity (cash)
             underlying_price: Current underlying price
             option_delta: Delta of selected option
@@ -1457,15 +1507,17 @@ class VolatilityArbitrageStrategy(Strategy):
         Returns:
             Number of contracts to trade
         """
-        # Apply position_size_pct to limit capital allocation per trade
-        # This prevents over-leveraging even with high exposure values
-        position_capital = account_equity * (self.config.position_size_pct / Decimal("100"))
-
         # Apply leverage multiplier (Phase 2)
         leverage_multiplier = self._get_leverage_multiplier(signal_direction)
 
+        # Cap exposure at position_size_pct to limit single-trade risk
+        # exposure is already a fraction (0.5 = 50%), position_size_pct is in percentage (5 = 5%)
+        max_exposure = self.config.position_size_pct / Decimal("100")
+        capped_exposure = min(abs(exposure), max_exposure)
+
         # Calculate target delta-adjusted notional WITH leverage
-        target_delta_notional = exposure * position_capital * leverage_multiplier
+        # This is the total delta exposure we want in dollar terms
+        target_delta_notional = capped_exposure * account_equity * leverage_multiplier
 
         # Each option contract controls 100 shares
         # Delta-adjusted notional = num_contracts * underlying_price * option_delta * 100
@@ -1475,7 +1527,7 @@ class VolatilityArbitrageStrategy(Strategy):
         if denominator == 0:
             return 0
 
-        num_contracts = abs(target_delta_notional) / denominator
+        num_contracts = target_delta_notional / denominator
 
         # Round to integer contracts (minimum 1 if we have a signal)
         result = max(1, int(num_contracts)) if num_contracts >= Decimal("0.5") else 0
@@ -1505,15 +1557,14 @@ class VolatilityArbitrageStrategy(Strategy):
         """
         signals: List[Signal] = []
 
-        # Check consensus threshold
-        if abs(consensus) < self.config.consensus_threshold:
-            return signals  # No entry if consensus too weak
+        # NOTE: Consensus threshold is checked in tiered sizing (_generate_qv_entry_logic)
+        # using min_consensus_threshold. No need to check again here.
 
-        # Determine direction
-        if consensus > self.config.consensus_threshold:
+        # Determine direction based on consensus sign
+        if consensus > Decimal("0"):
             # Bullish: Sell ATM Puts
             signals = self._create_long_delta_signals(option_chain, cash, exposure)
-        elif consensus < -self.config.consensus_threshold:
+        elif consensus < Decimal("0"):
             # Bearish: Sell ATM Calls
             signals = self._create_short_delta_signals(option_chain, cash, exposure)
 
@@ -1695,8 +1746,8 @@ class VolatilityArbitrageStrategy(Strategy):
         # Step 3: Update buffers
         self._update_qv_features(symbol, features)
 
-        # Step 4: Check if we have enough data
-        if symbol not in self.qv_buffers or len(self.qv_buffers[symbol].rv_252d) < 60:
+        # Step 4: Check if we have enough data (reduced from 60 to 30 for more trades)
+        if symbol not in self.qv_buffers or len(self.qv_buffers[symbol].rv_252d) < 30:
             return []  # Not enough data yet
 
         # Step 5: Generate binary signals
@@ -1724,6 +1775,19 @@ class VolatilityArbitrageStrategy(Strategy):
         # Step 9: Apply tiered multiplier to exposure
         adjusted_exposure = base_exposure * position_mult
 
+        # Step 9b: Apply uncertainty discount (Phase 2)
+        if self.uncertainty_sizer is not None and self._last_uncertainty > Decimal("0"):
+            # Use uncertainty sizer to discount position based on epistemic uncertainty
+            confidence_factor = self.uncertainty_sizer.calculate_size_pct(
+                signal_strength=float(abs(consensus)),
+                uncertainty=float(self._last_uncertainty),
+            )
+            adjusted_exposure = adjusted_exposure * Decimal(str(confidence_factor))
+            logger.debug(
+                f"Uncertainty discount: {symbol} | uncertainty={self._last_uncertainty:.4f} | "
+                f"confidence_factor={confidence_factor:.3f}"
+            )
+
         # Step 10: Generate entry signals
         entry_signals = self._generate_qv_entry_signals(option_chain, cash, consensus, adjusted_exposure)
 
@@ -1748,6 +1812,7 @@ class VolatilityArbitrageStrategy(Strategy):
                 "position_mult": float(position_mult),
                 "base_exposure": float(base_exposure),
                 "adjusted_exposure": float(adjusted_exposure),
+                "epistemic_uncertainty": float(self._last_uncertainty),
                 "signals": binary_signals,
             }
         )

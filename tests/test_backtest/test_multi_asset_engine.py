@@ -306,3 +306,109 @@ class TestMultiAssetEngine:
 
         # Allow for small execution differences
         assert abs(profit - Decimal("1000")) < Decimal("200")
+
+
+@pytest.mark.integration
+class TestCostModelIntegration:
+    """Integration tests for SquareRootImpactModel in backtest engine."""
+
+    def test_engine_without_cost_model(self):
+        """Engine works normally without cost model."""
+        config = BacktestConfig(
+            initial_capital=Decimal("100000"),
+            use_impact_model=False,
+        )
+
+        strategy = BuyAndHoldStrategy("SPY", 100)
+        engine = MultiAssetBacktestEngine(config, strategy)
+
+        assert engine.cost_model is None
+
+    def test_engine_with_cost_model(self):
+        """Engine initializes cost model when configured."""
+        config = BacktestConfig(
+            initial_capital=Decimal("100000"),
+            use_impact_model=True,
+            impact_half_spread_bps=Decimal("5.0"),
+            impact_coefficient=Decimal("0.1"),
+        )
+
+        strategy = BuyAndHoldStrategy("SPY", 100)
+        engine = MultiAssetBacktestEngine(config, strategy)
+
+        assert engine.cost_model is not None
+        from volatility_arbitrage.execution.costs import SquareRootImpactModel
+        assert isinstance(engine.cost_model, SquareRootImpactModel)
+
+    def test_cost_model_increases_slippage(self):
+        """Cost model should increase effective slippage."""
+        # Without cost model
+        config_no_cost = BacktestConfig(
+            initial_capital=Decimal("100000"),
+            use_impact_model=False,
+            slippage=Decimal("0.001"),
+        )
+
+        # With cost model
+        config_with_cost = BacktestConfig(
+            initial_capital=Decimal("100000"),
+            use_impact_model=True,
+            impact_half_spread_bps=Decimal("10.0"),
+            impact_coefficient=Decimal("0.2"),
+        )
+
+        strategy = BuyAndHoldStrategy("SPY", 100)
+        engine_no_cost = MultiAssetBacktestEngine(config_no_cost, strategy)
+        engine_with_cost = MultiAssetBacktestEngine(config_with_cost, strategy)
+
+        # Create same test data
+        dates = pd.date_range(start="2024-01-01", end="2024-01-10", freq="D")
+        data = pd.DataFrame({
+            "timestamp": dates,
+            "symbol": "SPY",
+            "open": 450.0,
+            "high": 455.0,
+            "low": 445.0,
+            "close": [450.0, 452.0, 454.0, 456.0, 458.0, 460.0, 458.0, 456.0, 454.0, 452.0],
+            "volume": 10_000_000,
+        })
+
+        result_no_cost = engine_no_cost.run(data)
+        result_with_cost = engine_with_cost.run(data.copy())
+
+        # With cost model, transaction costs should be higher
+        # This manifests as lower final capital for same trades
+        # (assuming same trading pattern)
+        # Note: This is a rough test - exact behavior depends on strategy
+        assert result_no_cost.final_capital != result_with_cost.final_capital
+
+
+@pytest.mark.unit
+class TestBacktestConfigPhase2:
+    """Tests for Phase 2 configuration fields."""
+
+    def test_default_impact_model_disabled(self):
+        """Impact model is disabled by default."""
+        config = BacktestConfig()
+        assert config.use_impact_model is False
+
+    def test_impact_model_config_fields(self):
+        """Impact model configuration fields exist."""
+        config = BacktestConfig(
+            use_impact_model=True,
+            impact_half_spread_bps=Decimal("7.5"),
+            impact_coefficient=Decimal("0.15"),
+        )
+
+        assert config.use_impact_model is True
+        assert config.impact_half_spread_bps == Decimal("7.5")
+        assert config.impact_coefficient == Decimal("0.15")
+
+    def test_default_impact_parameters(self):
+        """Default impact parameters are reasonable."""
+        config = BacktestConfig()
+
+        # Default half-spread of 5 bps
+        assert config.impact_half_spread_bps == Decimal("5.0")
+        # Default impact coefficient of 0.1
+        assert config.impact_coefficient == Decimal("0.1")

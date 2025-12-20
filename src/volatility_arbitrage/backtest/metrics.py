@@ -98,22 +98,29 @@ def calculate_sharpe_ratio(
     Returns:
         Sharpe ratio (adjusted for autocorrelation if enabled)
     """
+    # Edge case 1: insufficient data
     if len(returns) < 2:
+        return Decimal("0")
+
+    # Edge case 2: filter NaN/Inf values
+    clean_returns = returns.replace([np.inf, -np.inf], np.nan).dropna()
+    if len(clean_returns) < 2:
         return Decimal("0")
 
     # Calculate excess returns
     daily_rf = float(risk_free_rate) / periods_per_year
-    excess_returns = returns - daily_rf
+    excess_returns = clean_returns - daily_rf
 
     # Calculate mean of excess returns
     mean_excess = excess_returns.mean()
     std_excess = excess_returns.std()
 
-    if std_excess == 0 or np.isnan(std_excess):
+    # Edge case 3: zero/near-zero variance
+    if std_excess < 1e-8 or np.isnan(std_excess) or np.isinf(std_excess):
         return Decimal("0")
 
     # Apply Newey-West adjustment for autocorrelation if enabled
-    if adjust_autocorrelation and len(returns) > 10:
+    if adjust_autocorrelation and len(clean_returns) > 10:
         try:
             # Calculate autocorrelation function
             n = len(excess_returns)
@@ -140,8 +147,9 @@ def calculate_sharpe_ratio(
                 weight = 1 - i / (max_lag + 1)  # Bartlett kernel
                 adjustment += 2 * weight * rho
 
-            # Apply adjustment (only if it increases std, i.e., positive autocorrelation)
+            # Edge case 4: bound NW adjustment (max 10x)
             if adjustment > 1:
+                adjustment = min(adjustment, 10.0)  # Cap at 10x
                 std_excess = std_excess * np.sqrt(adjustment)
                 logger.debug(
                     f"Newey-West adjustment applied",
@@ -154,8 +162,16 @@ def calculate_sharpe_ratio(
         except Exception as e:
             logger.warning(f"Newey-West adjustment failed, using standard Sharpe: {e}")
 
+    # Edge case 5: final safety check after NW adjustment
+    if std_excess < 1e-8 or np.isnan(std_excess) or np.isinf(std_excess):
+        return Decimal("0")
+
     # Annualize
     sharpe = (mean_excess / std_excess) * np.sqrt(periods_per_year)
+
+    # Edge case 6: validate result
+    if np.isnan(sharpe) or np.isinf(sharpe):
+        return Decimal("0")
 
     return Decimal(str(sharpe))
 

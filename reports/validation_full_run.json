@@ -1,0 +1,48 @@
+{
+  "timestamp": "2025-12-20T12:16:51.189669",
+  "config": "config/volatility_arb.yaml",
+  "data_path": "src/volatility_arbitrage/data/SPY_Options_2019_24",
+  "initial_capital": 100000,
+  "validation_result": {
+    "backtest": {
+      "sharpe": 1.3195643801167571,
+      "nw_sharpe": 0.8332484821391452,
+      "total_return": 61.361836539484095,
+      "max_drawdown": -9.549261102241498,
+      "num_trades": 48
+    },
+    "mcpt": {
+      "pvalue": null,
+      "status": "ERROR"
+    },
+    "walk_forward": {
+      "avg_train_sharpe": 1.7795239977259891,
+      "avg_test_sharpe": 1.066941176223283,
+      "efficiency": 0.5995654891907619,
+      "folds_passed": "2/3",
+      "status": "PASS"
+    },
+    "bootstrap": {
+      "sharpe_ci": [
+        1.2796488900915652,
+        4.249592642754247
+      ],
+      "nw_sharpe_ci": [
+        0.8080435569543744,
+        2.6834360434701523
+      ],
+      "return_ci": [
+        38.8791040443145,
+        123.23788473608523
+      ],
+      "status": "PASS"
+    },
+    "overall": {
+      "status": "MARGINAL",
+      "is_pass": false,
+      "is_strong": false,
+      "is_marginal": true
+    },
+    "recommendation": "Alpha appears REAL but WEAK.\n\nRECOMMENDATION:\n- Some validation tests pass, others marginal or fail\n- Statistical significance is borderline\n- Proceed with EXTREME CAUTION\n\nNEXT STEPS:\n1. Reduce position sizing by 50% immediately\n2. Increase entry thresholds (consensus_threshold 0.15 \u2192 0.25)\n3. Add regime-based filters (avoid crisis/elevated regimes)\n4. Test on additional out-of-sample data (2024+)\n5. Consider strategy modifications to reduce autocorrelation\n\nRISK WARNING:\n- Alpha may be partially spurious\n- Out-of-sample performance likely to degrade\n- Do not increase position sizes without further validation\n"
+  }
+}

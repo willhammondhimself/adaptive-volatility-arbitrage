@@ -4,16 +4,18 @@ Heston option pricing service with caching.
 
 import sys
 import time
+from decimal import Decimal
 from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
 
-# Add research path to import HestonFFT
-research_path = Path(__file__).parent.parent.parent / "research" / "lib"
-sys.path.insert(0, str(research_path))
+# Add src path to import volatility_arbitrage modules
+src_path = Path(__file__).parent.parent.parent / "src"
+sys.path.insert(0, str(src_path))
 
-from heston_fft import HestonFFT  # type: ignore
+from volatility_arbitrage.models.heston import HestonModel, HestonParameters
+from volatility_arbitrage.core.types import OptionType
 
 from backend.schemas.heston import HestonParams, PriceSurfaceRequest, PriceSurfaceResponse
 from backend.services.cache_service import LRUCache
@@ -47,15 +49,14 @@ class HestonService:
             return PriceSurfaceResponse(**cached_result)
 
         # Cache miss - compute surface
-        heston = HestonFFT(
-            v0=request.params.v0,
-            theta=request.params.theta,
-            kappa=request.params.kappa,
-            sigma_v=request.params.sigma_v,
-            rho=request.params.rho,
-            r=request.params.r,
-            q=request.params.q,
+        heston_params = HestonParameters(
+            v0=Decimal(str(request.params.v0)),
+            theta=Decimal(str(request.params.theta)),
+            kappa=Decimal(str(request.params.kappa)),
+            xi=Decimal(str(request.params.sigma_v)),  # sigma_v -> xi
+            rho=Decimal(str(request.params.rho)),
         )
+        heston = HestonModel(heston_params)
 
         # Generate grid
         strikes = np.linspace(
@@ -65,11 +66,21 @@ class HestonService:
             request.maturity_range[0], request.maturity_range[1], request.num_maturities
         )
 
-        # Compute prices for each maturity
+        # Compute call prices for each maturity
+        r_decimal = Decimal(str(request.params.r))
         prices: List[List[float]] = []
         for T in maturities:
-            row_prices = heston.price_range(S=request.spot, strikes=strikes, T=T)
-            prices.append(row_prices.tolist())
+            row_prices = []
+            for K in strikes:
+                price = heston.price(
+                    S=Decimal(str(request.spot)),
+                    K=Decimal(str(K)),
+                    T=Decimal(str(T)),
+                    r=r_decimal,
+                    option_type=OptionType.CALL,
+                )
+                row_prices.append(float(price))
+            prices.append(row_prices)
 
         computation_time_ms = (time.time() - start_time) * 1000
 

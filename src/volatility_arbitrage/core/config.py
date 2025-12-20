@@ -111,6 +111,18 @@ class VolatilityArbitrageConfig:
     leverage_drawdown_reduction: bool = True
     leverage_dd_threshold: Decimal = Decimal("0.10")
 
+    # Bayesian LSTM Volatility Forecasting (Phase 2)
+    bayesian_lstm_hidden_size: int = 64
+    bayesian_lstm_dropout_p: float = 0.2
+    bayesian_lstm_sequence_length: int = 20
+    bayesian_lstm_n_mc_samples: int = 50
+
+    # Uncertainty-Adjusted Position Sizing (Phase 2)
+    use_uncertainty_sizing: bool = False
+    uncertainty_penalty: float = 2.0
+    uncertainty_min_position_pct: float = 0.01
+    uncertainty_max_position_pct: float = 0.15
+
 
 class DataConfig(BaseModel):
     """Data fetching configuration."""
@@ -166,6 +178,17 @@ class BacktestConfig(BaseModel):
     )
     risk_free_rate: Decimal = Field(
         default=Decimal("0.05"), description="Annual risk-free rate", ge=0, le=1
+    )
+
+    # Square-Root Impact Model (Phase 2)
+    use_impact_model: bool = Field(
+        default=False, description="Use square-root market impact model instead of fixed slippage"
+    )
+    impact_half_spread_bps: Decimal = Field(
+        default=Decimal("5.0"), description="Half bid-ask spread in basis points", ge=0
+    )
+    impact_coefficient: Decimal = Field(
+        default=Decimal("0.1"), description="Market impact coefficient", ge=0
     )
 
 
@@ -437,6 +460,18 @@ def load_strategy_config(config_path: Optional[Path] = None) -> VolatilityArbitr
         max_leveraged_notional_pct=Decimal(str(strategy_data.get("max_leveraged_notional_pct", 0.80))),
         leverage_drawdown_reduction=strategy_data.get("leverage_drawdown_reduction", True),
         leverage_dd_threshold=Decimal(str(strategy_data.get("leverage_dd_threshold", 0.10))),
+
+        # Bayesian LSTM Volatility Forecasting (Phase 2)
+        bayesian_lstm_hidden_size=strategy_data.get("bayesian_lstm_hidden_size", 64),
+        bayesian_lstm_dropout_p=strategy_data.get("bayesian_lstm_dropout_p", 0.2),
+        bayesian_lstm_sequence_length=strategy_data.get("bayesian_lstm_sequence_length", 20),
+        bayesian_lstm_n_mc_samples=strategy_data.get("bayesian_lstm_n_mc_samples", 50),
+
+        # Uncertainty-Adjusted Position Sizing (Phase 2)
+        use_uncertainty_sizing=strategy_data.get("use_uncertainty_sizing", False),
+        uncertainty_penalty=strategy_data.get("uncertainty_penalty", 2.0),
+        uncertainty_min_position_pct=strategy_data.get("uncertainty_min_position_pct", 0.01),
+        uncertainty_max_position_pct=strategy_data.get("uncertainty_max_position_pct", 0.15),
     )
 
     return config

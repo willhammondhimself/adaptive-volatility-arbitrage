@@ -4,7 +4,7 @@ FastAPI application for Volatility Arbitrage Dashboard.
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from backend.api import heston
+from backend.api import heston, forecast, costs, backtest
 
 app = FastAPI(
     title="Volatility Arbitrage Dashboard API",
@@ -28,6 +28,9 @@ app.add_middleware(
 
 # Include routers
 app.include_router(heston.router)
+app.include_router(forecast.router)
+app.include_router(costs.router)
+app.include_router(backtest.router)
 
 
 @app.get("/")

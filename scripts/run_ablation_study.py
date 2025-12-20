@@ -322,7 +322,7 @@ def main():
     parser.add_argument(
         '--skip-mcpt',
         action='store_true',
-        help='Skip MCPT (just run backtests for quick comparison)'
+        help='Skip MCPT (just run backtests for quick comparison). By default, MCPT runs with 1000 permutations.'
     )
     parser.add_argument(
         '--output',
@@ -344,7 +344,8 @@ def main():
 
     # Load ablation config
     ablation_config = load_ablation_config(args.ablation_config)
-    mcpt_perms = args.permutations or ablation_config['ablation'].get('mcpt_permutations', 50)
+    # Default to 1000 permutations for statistically reliable MCPT results
+    mcpt_perms = args.permutations or ablation_config['ablation'].get('mcpt_permutations', 1000)
 
     # Load options data
     print(f"\nLoading options data...")

@@ -21,6 +21,7 @@ from volatility_arbitrage.backtest.engine import BacktestEngine, BacktestResult
 from volatility_arbitrage.core.config import BacktestConfig
 from volatility_arbitrage.core.types import Trade, TradeType, OptionType
 from volatility_arbitrage.models.black_scholes import BlackScholesModel, Greeks
+from volatility_arbitrage.execution.costs import SquareRootImpactModel
 from volatility_arbitrage.strategy.base import Strategy, Signal
 from volatility_arbitrage.utils.logging import get_logger
 
@@ -223,6 +224,22 @@ class MultiAssetBacktestEngine(BacktestEngine):
         self.option_slippage_pct = option_slippage_pct
         self.margin_requirement_pct = margin_requirement_pct
 
+        # Square-root impact model (Phase 2)
+        if config.use_impact_model:
+            self.cost_model: Optional[SquareRootImpactModel] = SquareRootImpactModel(
+                half_spread_bps=float(config.impact_half_spread_bps),
+                impact_coeff=float(config.impact_coefficient),
+            )
+            logger.info(
+                "Using SquareRootImpactModel for transaction costs",
+                extra={
+                    "half_spread_bps": float(config.impact_half_spread_bps),
+                    "impact_coeff": float(config.impact_coefficient),
+                },
+            )
+        else:
+            self.cost_model = None
+
         # Enhanced position tracking
         self.multi_positions: dict[str, MultiAssetPosition] = {}
 
@@ -417,11 +434,33 @@ class MultiAssetBacktestEngine(BacktestEngine):
             option_type=option_type,
         )
 
-        # Apply slippage (2.5% default - realistic for options)
-        if signal.action == "buy":
-            execution_price = theoretical_price * (Decimal("1") + self.option_slippage_pct)
+        # Apply transaction costs
+        if self.cost_model is not None:
+            # Use square-root impact model (Phase 2)
+            daily_volume = float(symbol_data.iloc[0].get("volume", 100_000))
+            order_shares = abs(signal.quantity) * 100  # Options = 100 shares each
+
+            impact_cost = self.cost_model.calculate_cost(
+                order_size=order_shares,
+                price=float(theoretical_price),
+                volatility=float(implied_vol),
+                daily_volume=daily_volume,
+            )
+
+            # Convert to percentage of trade value
+            notional = float(theoretical_price) * order_shares
+            impact_pct = Decimal(str(impact_cost / notional)) if notional > 0 else Decimal("0")
+
+            if signal.action == "buy":
+                execution_price = theoretical_price * (Decimal("1") + impact_pct)
+            else:
+                execution_price = theoretical_price * (Decimal("1") - impact_pct)
         else:
-            execution_price = theoretical_price * (Decimal("1") - self.option_slippage_pct)
+            # Original fixed slippage (2.5% default - realistic for options)
+            if signal.action == "buy":
+                execution_price = theoretical_price * (Decimal("1") + self.option_slippage_pct)
+            else:
+                execution_price = theoretical_price * (Decimal("1") - self.option_slippage_pct)
 
         # Calculate costs: per-contract commission
         commission = self.option_commission_per_contract * Decimal(abs(signal.quantity))

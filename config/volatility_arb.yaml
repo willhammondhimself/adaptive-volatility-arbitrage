@@ -16,6 +16,12 @@ backtest:
   max_positions: 5
   risk_free_rate: 0.05  # 5% annual
 
+  # ===== PHASE 2: SQUARE-ROOT IMPACT MODEL =====
+  # Realistic market impact based on Almgren & Chriss
+  use_impact_model: true
+  impact_half_spread_bps: 5.0       # Half bid-ask spread in bps
+  impact_coefficient: 0.1           # Market impact coefficient
+
 strategy:
   # Entry/Exit Thresholds
   entry_threshold_pct: 5.0  # Enter when spread >= 5%
@@ -30,9 +36,12 @@ strategy:
   delta_target: 0.0  # Target delta-neutral
 
   # Position Sizing
-  position_size_pct: 5.0  # 5% of capital per trade
+  # NOTE: For SPY options at ~$285, each ATM contract has ~$12,800 delta exposure
+  # Need at least 13% to get 1 contract with $100k capital
+  position_size_pct: 15.0  # 15% of capital per trade (allows 1-2 contracts)
   max_vega_exposure: 1000  # Max vega per position
   max_positions: 5
+  min_holding_days: 3  # was 5 → 40% faster turnover for more trades
 
   # Volatility Forecasting
   vol_lookback_period: 30  # 30 days for volatility calculation
@@ -50,16 +59,16 @@ strategy:
   feature_window: 60      # Z-score calculation window
   regime_window: 252      # Vol percentile window
 
-  # QV Signal Thresholds (lowered from original for more signals)
-  pc_ratio_threshold: 0.5       # Put/Call ratio z-score threshold
-  skew_threshold: 0.5           # IV skew z-score threshold
-  premium_threshold: 0.10       # IV premium threshold (10%)
-  term_structure_threshold: 0.0 # Term structure threshold
-  volume_spike_threshold: 1.0   # Volume spike z-score threshold
-  sentiment_threshold: 0.5      # Near-term sentiment z-score threshold
+  # QV Signal Thresholds (AGGRESSIVE for more trades)
+  pc_ratio_threshold: 0.3       # was 0.5 → 40% reduction
+  skew_threshold: 0.3           # was 0.5 → 40% reduction
+  premium_threshold: 0.05       # was 0.10 → 50% reduction
+  term_structure_threshold: -0.2 # was 0.0 → accept negative
+  volume_spike_threshold: 0.7   # was 1.0 → 30% reduction
+  sentiment_threshold: 0.3      # was 0.5 → 40% reduction
 
-  # QV Consensus Scoring
-  consensus_threshold: 0.15     # Minimum consensus for entry (lowered for more trades)
+  # QV Consensus Scoring (VERY AGGRESSIVE)
+  consensus_threshold: 0.08     # was 0.15 → 47% reduction
 
   # QV Signal Weights (sum to 1.0)
   weight_pc_ratio: 0.20
@@ -80,22 +89,22 @@ strategy:
   base_long_bias: 0.0           # No directional bias (was 0.8)
   signal_adjustment_factor: 1.0 # Full signal weight
 
-  # Tiered Position Sizing
+  # Tiered Position Sizing (ENABLE Bronze tier)
   use_tiered_sizing: true
-  min_consensus_threshold: 0.15
-  position_scaling_method: quadratic
-  min_holding_days: 5
+  min_consensus_threshold: 0.05  # was 0.15 → 67% reduction (Bronze tier)
+  position_scaling_method: linear  # was quadratic
+  min_holding_days: 3  # was 5 → 40% faster turnover
 
   # ===== ENHANCED RISK MANAGEMENT (NEW) =====
   # NOTE: Set all to false to restore original v1.0 baseline
 
-  # Dynamic Consensus Thresholds (regime-aware) - AGGRESSIVE for more trades
-  use_dynamic_threshold: false
+  # Dynamic Consensus Thresholds (ENABLE for regime-based aggression)
+  use_dynamic_threshold: true
   dynamic_threshold:
-    crisis_threshold: 0.15      # Even in crisis, take good trades (was 0.20)
-    elevated_threshold: 0.12    # Lower threshold in elevated vol (was 0.15)
-    normal_threshold: 0.10      # Aggressive in normal conditions (was 0.12)
-    low_vol_threshold: 0.08     # Very aggressive in low vol (was 0.10)
+    crisis_threshold: 0.12      # was 0.15
+    elevated_threshold: 0.08    # was 0.12
+    normal_threshold: 0.06      # was 0.10
+    low_vol_threshold: 0.05     # was 0.08
 
   # Drawdown Recovery (position scaling during drawdowns)
   use_drawdown_recovery: false
@@ -230,6 +239,21 @@ strategy:
   short_vol_leverage: 1.15         # 1.15x leverage for short vol positions
   long_vol_leverage: 1.5           # 1.5x leverage for long vol positions
 
+  # ===== PHASE 2: BAYESIAN LSTM VOLATILITY FORECASTING =====
+  # Use Bayesian LSTM with MC Dropout for uncertainty-aware forecasts
+  vol_forecast_method: bayesian_lstm  # Options: historical, ewma, garch, bayesian_lstm
+  bayesian_lstm_hidden_size: 64
+  bayesian_lstm_dropout_p: 0.2
+  bayesian_lstm_sequence_length: 20
+  bayesian_lstm_n_mc_samples: 50
+
+  # ===== PHASE 2: UNCERTAINTY-ADJUSTED POSITION SIZING =====
+  # Scale positions based on epistemic uncertainty from Bayesian forecaster
+  use_uncertainty_sizing: true
+  uncertainty_penalty: 2.0           # Higher = more conservative with uncertainty
+  uncertainty_min_position_pct: 0.01 # Floor at 1% position
+  uncertainty_max_position_pct: 0.15 # Cap at 15% position
+
   # Regime-Specific Parameters
   # Maps regime_id to entry/exit thresholds and position sizing
   # Regime 0: Low volatility - tighter thresholds, larger positions
@@ -270,3 +294,31 @@ logging:
   format: json
   log_dir: logs
   console_output: true
+
+# ===== VALIDATION CONFIGURATION =====
+# Statistical validation tests for strategy robustness
+validation:
+  # Enable/disable each validation test
+  enable_mcpt: true                  # Monte Carlo Permutation Test
+  enable_walkforward: true           # Walk-forward validation
+  enable_bootstrap: true             # Block bootstrap
+
+  # MCPT settings
+  mcpt_permutations: 1000            # Number of permutations (1000 for production)
+  mcpt_significance_level: 0.01      # Threshold for strong evidence
+  mcpt_use_parallel: true            # Use multiprocessing for speed
+
+  # Walk-forward settings
+  wf_train_months: 6                 # Training window size
+  wf_test_months: 3                  # Test window size
+  wf_efficiency_threshold: 0.5       # Minimum acceptable efficiency ratio
+
+  # Bootstrap settings
+  bootstrap_samples: 10000           # Number of bootstrap samples
+  bootstrap_block_size: 3            # Block size for serial correlation preservation
+  bootstrap_seed: 42                 # Random seed for reproducibility
+
+  # Pass/fail thresholds
+  min_mcpt_pvalue: 0.05              # MCPT must pass at p < 0.05
+  min_efficiency_ratio: 0.5          # Walk-forward efficiency > 0.5
+  min_sharpe_ci_lower: 0.0           # Bootstrap Sharpe 95% CI lower bound > 0

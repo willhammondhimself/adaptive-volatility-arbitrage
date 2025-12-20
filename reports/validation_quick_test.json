@@ -1,0 +1,48 @@
+{
+  "timestamp": "2025-12-20T01:25:54.784095",
+  "config": "config/volatility_arb.yaml",
+  "data_path": "src/volatility_arbitrage/data/SPY_Options_2019_24",
+  "initial_capital": 100000,
+  "validation_result": {
+    "backtest": {
+      "sharpe": 0.9723239993727706,
+      "nw_sharpe": 0.07603272423468899,
+      "total_return": 21.332857482695765,
+      "max_drawdown": -5.599630885994106,
+      "num_trades": 48
+    },
+    "mcpt": {
+      "pvalue": null,
+      "status": "ERROR"
+    },
+    "walk_forward": {
+      "avg_train_sharpe": 0,
+      "avg_test_sharpe": 0,
+      "efficiency": 0,
+      "folds_passed": "0/5",
+      "status": "SKIPPED"
+    },
+    "bootstrap": {
+      "sharpe_ci": [
+        -0.291476113346198,
+        1.7688592524156335
+      ],
+      "nw_sharpe_ci": [
+        -0.09715870444873266,
+        0.5896197508052111
+      ],
+      "return_ci": [
+        9.438184301229883,
+        41.44912259278646
+      ],
+      "status": "FAIL"
+    },
+    "overall": {
+      "status": "FAIL",
+      "is_pass": false,
+      "is_strong": false,
+      "is_marginal": false
+    },
+    "recommendation": "Alpha appears SPURIOUS or STATISTICALLY INSIGNIFICANT.\n\nRECOMMENDATION:\n- Validation tests FAIL or show no statistical significance\n- DO NOT TRADE this strategy in its current form\n\nNEXT STEPS:\n1. DO NOT DEPLOY to live trading\n2. Investigate potential overfitting:\n   - Check for look-ahead bias in signals\n   - Too many parameters optimized in-sample?\n   - Regime-specific (only works in specific market conditions)?\n3. Perform deeper analysis:\n   - Examine individual trades for anomalies\n   - Check data quality and preprocessing\n   - Verify MCPT permutation logic is correct\n4. Consider complete strategy redesign with stricter validation\n\nCRITICAL WARNING:\n- This strategy does not pass statistical validation\n- Backtested performance is likely due to overfitting or luck\n- Trading this strategy risks real capital on false alpha\n"
+  }
+}

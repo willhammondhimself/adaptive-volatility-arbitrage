@@ -5,6 +5,7 @@ const client = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  timeout: 300000, // 5 minute timeout for long-running backtests
 });
 
 export default client;
