@@ -289,11 +289,11 @@ const BacktestDashboard = () => {
           />
         </Paper>
 
-        {/* Equity Curve */}
+        {/* Equity Curve & Drawdown */}
         <Paper elevation={3} sx={{ p: 2 }}>
           <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1 }}>
             <Typography variant="h6">
-              Performance
+              Equity & Drawdown
             </Typography>
             <FormControlLabel
               control={
