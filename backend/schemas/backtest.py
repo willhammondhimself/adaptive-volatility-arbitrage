@@ -99,3 +99,84 @@ class BacktestResponse(BaseModel):
     data_range: Dict[str, str] = Field(
         ..., description="Start and end dates of backtest"
     )
+    trade_returns: Optional[List[float]] = Field(
+        default=None,
+        description="Trade returns for Monte Carlo resampling (decimals)",
+    )
+
+
+# Monte Carlo schemas
+
+class MonteCarloRequest(BaseModel):
+    """Request to run Monte Carlo simulation on trade returns."""
+
+    trade_returns: List[float] = Field(
+        ..., min_length=5, description="Trade returns as decimals"
+    )
+    n_simulations: int = Field(
+        default=10000, ge=100, le=100000, description="Number of bootstrap samples"
+    )
+    block_size: int = Field(
+        default=3, ge=1, le=10, description="Block size for block bootstrap"
+    )
+    initial_capital: float = Field(
+        default=100000.0, gt=0, description="Initial capital for equity calculations"
+    )
+    random_seed: Optional[int] = Field(
+        default=None, description="Optional seed for reproducibility"
+    )
+    winsorize_pct: Optional[float] = Field(
+        default=None, ge=90, le=99, description="Winsorize outliers at percentile"
+    )
+
+
+class MonteCarloMetrics(BaseModel):
+    """Statistics for a single metric from MC simulation."""
+
+    mean: float
+    std: float
+    median: float
+    ci_lower: float = Field(..., description="2.5th percentile (95% CI lower)")
+    ci_upper: float = Field(..., description="97.5th percentile (95% CI upper)")
+
+
+class RiskAssessment(BaseModel):
+    """Probability assessments from MC distribution."""
+
+    prob_loss: float = Field(..., ge=0, le=100, description="P(total return < 0)")
+    prob_low_sharpe: float = Field(..., ge=0, le=100, description="P(Sharpe < 0.5)")
+    prob_severe_drawdown: float = Field(
+        ..., ge=0, le=100, description="P(DD > 20%)"
+    )
+
+
+class MonteCarloResponse(BaseModel):
+    """Response from Monte Carlo simulation."""
+
+    n_simulations: int
+    n_trades: int
+
+    total_return: MonteCarloMetrics
+    sharpe_ratio: MonteCarloMetrics
+    max_drawdown: MonteCarloMetrics
+    win_rate: MonteCarloMetrics
+
+    risk_assessment: RiskAssessment
+
+    # Histogram data for frontend charts (downsampled)
+    return_distribution: List[float]
+    sharpe_distribution: List[float]
+    drawdown_distribution: List[float]
+
+    # Observed values from actual backtest (for histogram markers)
+    observed_return: Optional[float] = Field(
+        default=None, description="Actual backtest total return %"
+    )
+    observed_sharpe: Optional[float] = Field(
+        default=None, description="Actual backtest Sharpe ratio"
+    )
+    observed_drawdown: Optional[float] = Field(
+        default=None, description="Actual backtest max drawdown %"
+    )
+
+    computation_time_ms: float

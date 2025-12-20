@@ -99,11 +99,13 @@ class BacktestService:
         # Approximate Sharpe based on return
         sharpe = total_return * 2.5 / (max_dd + 0.01) if max_dd > 0 else 1.5
 
+        num_trades = random.randint(15, 35)
+
         metrics = BacktestMetrics(
             total_return=round(total_return, 4),
             sharpe_ratio=round(sharpe, 2),
             max_drawdown=round(max_dd, 4),
-            total_trades=random.randint(15, 35),
+            total_trades=num_trades,
             win_rate=round(random.uniform(0.45, 0.65), 2),
         )
 
@@ -113,6 +115,18 @@ class BacktestService:
             uncertainty_sizer_active=request.use_uncertainty_sizing,
             leverage_active=request.use_leverage,
         )
+
+        # Generate synthetic trade returns for Monte Carlo
+        # Mix of winning and losing trades with realistic distribution
+        trade_returns = []
+        for _ in range(num_trades):
+            # Win rate around 55%, avg win > avg loss
+            if random.random() < 0.55:
+                # Winning trade: 2-15% gain
+                trade_returns.append(random.uniform(0.02, 0.15))
+            else:
+                # Losing trade: 1-10% loss
+                trade_returns.append(random.uniform(-0.10, -0.01))
 
         computation_time_ms = (time.time() - start_time) * 1000
 
@@ -125,6 +139,7 @@ class BacktestService:
                 "start": start_date.strftime("%Y-%m-%d"),
                 "end": (start_date + timedelta(days=num_days - 1)).strftime("%Y-%m-%d"),
             },
+            trade_returns=trade_returns,
         )
 
     def run(self, request: BacktestRequest) -> BacktestResponse:
@@ -256,6 +271,9 @@ class BacktestService:
             leverage_active=strategy_config.use_leverage,
         )
 
+        # Extract trade returns for Monte Carlo
+        trade_returns = self._extract_trade_returns(engine.trades)
+
         return BacktestResponse(
             metrics=metrics,
             equity_curve=equity_curve,
@@ -265,4 +283,55 @@ class BacktestService:
                 "start": start_date.isoformat() if hasattr(start_date, "isoformat") else str(start_date),
                 "end": end_date.isoformat() if hasattr(end_date, "isoformat") else str(end_date),
             },
+            trade_returns=trade_returns if trade_returns else None,
         )
+
+    def _extract_trade_returns(self, trades: list) -> list[float]:
+        """
+        Extract position returns from trade log.
+
+        Pairs BUY/SELL trades on same symbol to compute round-trip returns.
+        """
+        from collections import defaultdict
+
+        if not trades:
+            return []
+
+        positions = defaultdict(list)
+
+        for trade in trades:
+            # Get action type
+            action = str(trade.trade_type.value).upper() if hasattr(trade, 'trade_type') else "BUY"
+            symbol = getattr(trade, 'symbol', 'UNKNOWN')
+            price = float(getattr(trade, 'price', 0))
+            quantity = getattr(trade, 'quantity', 0)
+            timestamp = getattr(trade, 'timestamp', None)
+
+            positions[symbol].append({
+                "timestamp": timestamp,
+                "action": action,
+                "price": price,
+                "quantity": quantity,
+            })
+
+        returns = []
+        for symbol, symbol_trades in positions.items():
+            # Sort by timestamp
+            symbol_trades.sort(key=lambda x: x["timestamp"] if x["timestamp"] else "")
+
+            open_position = None
+            for t in symbol_trades:
+                if open_position is None:
+                    open_position = t
+                else:
+                    if t["action"] != open_position["action"]:
+                        # Calculate return
+                        if open_position["price"] > 0:
+                            if open_position["action"] == "BUY":
+                                ret = (t["price"] - open_position["price"]) / open_position["price"]
+                            else:
+                                ret = (open_position["price"] - t["price"]) / open_position["price"]
+                            returns.append(ret)
+                        open_position = None
+
+        return returns

@@ -1,8 +1,14 @@
 import React from 'react';
 import Plot from 'react-plotly.js';
-import { Box, CircularProgress, Typography } from '@mui/material';
+import { Box, CircularProgress, Typography, useTheme } from '@mui/material';
+import { getPlotlyLayout, getChartColors } from '../../utils/plotlyTheme';
 
 const HestonHeatmap = ({ strikes, maturities, prices, params, isLoading }) => {
+  const theme = useTheme();
+  const mode = theme.palette.mode;
+  const plotlyTheme = getPlotlyLayout(mode);
+  const colors = getChartColors(mode);
+
   if (isLoading) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" height="600px">
@@ -33,29 +39,30 @@ const HestonHeatmap = ({ strikes, maturities, prices, params, isLoading }) => {
       colorbar: {
         title: 'Price ($)',
         titleside: 'right',
+        tickfont: { color: colors.text },
+        titlefont: { color: colors.text },
       },
     },
   ];
 
   const layout = {
+    ...plotlyTheme,
     title: {
       text: `Heston Call Option Price Heatmap<br><sub>v₀=${params.v0}, θ=${params.theta}, κ=${params.kappa}, σᵥ=${params.sigma_v}, ρ=${params.rho}</sub>`,
-      font: { size: 16 },
+      font: { size: 16, color: colors.text },
     },
     xaxis: {
-      title: 'Strike Price ($)',
+      ...plotlyTheme.xaxis,
+      title: { text: 'Strike Price ($)', font: { color: colors.text } },
       showgrid: true,
-      gridcolor: '#e0e0e0',
     },
     yaxis: {
-      title: 'Time to Maturity (years)',
+      ...plotlyTheme.yaxis,
+      title: { text: 'Time to Maturity (years)', font: { color: colors.text } },
       showgrid: true,
-      gridcolor: '#e0e0e0',
     },
     autosize: true,
     margin: { l: 60, r: 60, t: 100, b: 60 },
-    plot_bgcolor: '#fafafa',
-    paper_bgcolor: '#ffffff',
   };
 
   const config = {

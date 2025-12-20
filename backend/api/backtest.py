@@ -3,13 +3,20 @@ Backtest execution API endpoints.
 """
 
 from fastapi import APIRouter, HTTPException
-from backend.schemas.backtest import BacktestRequest, BacktestResponse
+from backend.schemas.backtest import (
+    BacktestRequest,
+    BacktestResponse,
+    MonteCarloRequest,
+    MonteCarloResponse,
+)
 from backend.services.backtest_service import BacktestService
+from backend.services.monte_carlo_service import MonteCarloService
 
 router = APIRouter(prefix="/api/v1/backtest", tags=["backtest"])
 
-# Initialize service (singleton)
+# Initialize services (singleton)
 backtest_service = BacktestService()
+monte_carlo_service = MonteCarloService()
 
 
 @router.post("/run", response_model=BacktestResponse)
@@ -51,4 +58,40 @@ async def run_backtest(request: BacktestRequest) -> BacktestResponse:
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Error running backtest: {str(e)}"
+        )
+
+
+@router.post("/monte-carlo", response_model=MonteCarloResponse)
+async def run_monte_carlo(request: MonteCarloRequest) -> MonteCarloResponse:
+    """
+    Run Monte Carlo simulation on trade returns.
+
+    Uses block bootstrap resampling to preserve serial correlation
+    (winning/losing streaks) in trade sequences. Returns 95% confidence
+    intervals for total return, Sharpe ratio, and max drawdown.
+
+    **Workflow:**
+    1. Run backtest via POST /run to get trade_returns
+    2. Call this endpoint with those returns
+    3. Display distribution histograms with confidence intervals
+
+    **Input:**
+    - trade_returns: Array of trade returns as decimals (e.g., 0.05 = 5%)
+    - n_simulations: Number of bootstrap samples (default 10,000)
+    - block_size: Trades per block for block bootstrap (default 3)
+
+    **Output:**
+    - Confidence intervals for total return, Sharpe, max drawdown
+    - Risk probabilities: P(loss), P(Sharpe < 0.5), P(DD > 20%)
+    - Downsampled distributions for histogram visualization
+
+    **Performance:** ~1-2 seconds for 10,000 simulations
+    """
+    try:
+        return monte_carlo_service.run(request)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Monte Carlo simulation error: {str(e)}"
         )

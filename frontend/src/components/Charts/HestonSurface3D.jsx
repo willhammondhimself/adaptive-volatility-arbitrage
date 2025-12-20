@@ -1,8 +1,15 @@
 import React from 'react';
 import Plot from 'react-plotly.js';
-import { Box, CircularProgress, Typography } from '@mui/material';
+import { Box, CircularProgress, Typography, useTheme } from '@mui/material';
+import { getPlotlyLayout, getChartColors, getSceneLayout } from '../../utils/plotlyTheme';
 
 const HestonSurface3D = ({ strikes, maturities, prices, params, isLoading }) => {
+  const theme = useTheme();
+  const mode = theme.palette.mode;
+  const plotlyTheme = getPlotlyLayout(mode);
+  const colors = getChartColors(mode);
+  const sceneTheme = getSceneLayout(mode);
+
   if (isLoading) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" height="700px">
@@ -34,46 +41,45 @@ const HestonSurface3D = ({ strikes, maturities, prices, params, isLoading }) => 
         z: {
           show: true,
           project: { z: true },
-          color: '#666',
+          color: mode === 'dark' ? '#888' : '#666',
           width: 1,
         },
       },
       colorbar: {
         title: 'Price ($)',
         titleside: 'right',
+        tickfont: { color: colors.text },
+        titlefont: { color: colors.text },
       },
     },
   ];
 
   const layout = {
+    ...plotlyTheme,
     title: {
       text: `Heston Call Option Price Surface (3D)<br><sub>v₀=${params.v0}, θ=${params.theta}, κ=${params.kappa}, σᵥ=${params.sigma_v}, ρ=${params.rho}</sub>`,
-      font: { size: 16 },
+      font: { size: 16, color: colors.text },
     },
     scene: {
+      ...sceneTheme,
       xaxis: {
-        title: 'Strike Price ($)',
-        showgrid: true,
-        gridcolor: '#d0d0d0',
+        ...sceneTheme.xaxis,
+        title: { text: 'Strike Price ($)', font: { color: colors.text } },
       },
       yaxis: {
-        title: 'Maturity (years)',
-        showgrid: true,
-        gridcolor: '#d0d0d0',
+        ...sceneTheme.yaxis,
+        title: { text: 'Maturity (years)', font: { color: colors.text } },
       },
       zaxis: {
-        title: 'Call Price ($)',
-        showgrid: true,
-        gridcolor: '#d0d0d0',
+        ...sceneTheme.zaxis,
+        title: { text: 'Call Price ($)', font: { color: colors.text } },
       },
       camera: {
         eye: { x: 1.5, y: 1.5, z: 1.3 },
       },
-      bgcolor: '#fafafa',
     },
     autosize: true,
     margin: { l: 0, r: 0, t: 100, b: 0 },
-    paper_bgcolor: '#ffffff',
   };
 
   const config = {

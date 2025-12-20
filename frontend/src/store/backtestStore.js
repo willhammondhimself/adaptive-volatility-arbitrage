@@ -19,12 +19,18 @@ const useBacktestStore = create((set) => ({
     useLeverage: false,
   },
 
-  // Results
+  // Backtest results
   results: null,
   isLoading: false,
   error: null,
 
-  // Actions
+  // Monte Carlo state
+  monteCarloResults: null,
+  monteCarloLoading: false,
+  monteCarloError: null,
+  numSimulations: 10000,
+
+  // Backtest actions
   updateConfig: (key, value) =>
     set((state) => ({
       config: { ...state.config, [key]: value },
@@ -36,6 +42,20 @@ const useBacktestStore = create((set) => ({
   setLoading: (isLoading) => set({ isLoading }),
 
   setError: (error) => set({ error, isLoading: false }),
+
+  // Monte Carlo actions
+  setMonteCarloResults: (results) =>
+    set({ monteCarloResults: results, monteCarloLoading: false, monteCarloError: null }),
+
+  setMonteCarloLoading: (loading) => set({ monteCarloLoading: loading }),
+
+  setMonteCarloError: (error) =>
+    set({ monteCarloError: error, monteCarloLoading: false }),
+
+  setNumSimulations: (num) => set({ numSimulations: num }),
+
+  clearMonteCarloResults: () =>
+    set({ monteCarloResults: null, monteCarloError: null }),
 
   reset: () =>
     set({
@@ -55,6 +75,8 @@ const useBacktestStore = create((set) => ({
       },
       results: null,
       error: null,
+      monteCarloResults: null,
+      monteCarloError: null,
     }),
 }));
 

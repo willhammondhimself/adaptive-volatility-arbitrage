@@ -1,8 +1,14 @@
 import React from 'react';
 import Plot from 'react-plotly.js';
-import { Box, CircularProgress, Typography } from '@mui/material';
+import { Box, CircularProgress, Typography, useTheme } from '@mui/material';
+import { getPlotlyLayout, getChartColors } from '../../utils/plotlyTheme';
 
 const UncertaintyChart = ({ forecast, isLoading }) => {
+  const theme = useTheme();
+  const mode = theme.palette.mode;
+  const plotlyTheme = getPlotlyLayout(mode);
+  const colors = getChartColors(mode);
+
   if (isLoading) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" height="300px">
@@ -30,13 +36,13 @@ const UncertaintyChart = ({ forecast, isLoading }) => {
       x: ['Volatility Forecast'],
       y: [mean_vol * 100], // Convert to percentage
       name: 'Mean Vol',
-      marker: { color: '#1976d2' },
+      marker: { color: colors.primary },
       error_y: {
         type: 'data',
         array: [(upper_bound - mean_vol) * 100],
         arrayminus: [(mean_vol - lower_bound) * 100],
         visible: true,
-        color: '#666',
+        color: colors.textSecondary,
         thickness: 2,
         width: 8,
       },
@@ -48,24 +54,24 @@ const UncertaintyChart = ({ forecast, isLoading }) => {
   ];
 
   const layout = {
+    ...plotlyTheme,
     title: {
       text: 'Volatility Forecast with Uncertainty',
-      font: { size: 14 },
+      font: { size: 14, color: colors.text },
     },
     yaxis: {
-      title: 'Annualized Volatility (%)',
+      ...plotlyTheme.yaxis,
+      title: { text: 'Annualized Volatility (%)', font: { color: colors.text } },
       showgrid: true,
-      gridcolor: '#e0e0e0',
       range: [0, Math.max(upper_bound * 100 * 1.2, 50)],
     },
     xaxis: {
+      ...plotlyTheme.xaxis,
       showticklabels: false,
     },
     autosize: true,
     height: 280,
     margin: { l: 60, r: 30, t: 50, b: 30 },
-    plot_bgcolor: '#fafafa',
-    paper_bgcolor: '#ffffff',
     annotations: [
       {
         x: 'Volatility Forecast',
@@ -73,7 +79,7 @@ const UncertaintyChart = ({ forecast, isLoading }) => {
         text: `${(mean_vol * 100).toFixed(1)}%`,
         showarrow: false,
         yshift: 20,
-        font: { size: 12, color: '#1976d2' },
+        font: { size: 12, color: colors.primary },
       },
       {
         x: 0.5,
@@ -82,7 +88,7 @@ const UncertaintyChart = ({ forecast, isLoading }) => {
         yref: 'paper',
         text: `Uncertainty: ±${(epistemic_uncertainty * 100).toFixed(2)}% | Confidence: ${(confidence_scalar * 100).toFixed(0)}%`,
         showarrow: false,
-        font: { size: 11, color: '#666' },
+        font: { size: 11, color: colors.textSecondary },
       },
     ],
   };

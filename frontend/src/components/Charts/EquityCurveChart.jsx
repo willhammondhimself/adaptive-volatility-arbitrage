@@ -1,8 +1,14 @@
 import React from 'react';
 import Plot from 'react-plotly.js';
-import { Box, CircularProgress, Typography } from '@mui/material';
+import { Box, CircularProgress, Typography, useTheme } from '@mui/material';
+import { getPlotlyLayout, getChartColors } from '../../utils/plotlyTheme';
 
 const EquityCurveChart = ({ equityCurve, initialCapital, isLoading, showBuyHold = false }) => {
+  const theme = useTheme();
+  const mode = theme.palette.mode;
+  const plotlyTheme = getPlotlyLayout(mode);
+  const colors = getChartColors(mode);
+
   if (isLoading) {
     return (
       <Box display="flex" justifyContent="center" alignItems="center" height="500px">
@@ -47,7 +53,7 @@ const EquityCurveChart = ({ equityCurve, initialCapital, isLoading, showBuyHold 
       x: dates,
       y: equity,
       name: 'Strategy',
-      line: { color: '#1976d2', width: 2 },
+      line: { color: colors.strategy, width: 2 },
       xaxis: 'x',
       yaxis: 'y',
       hovertemplate: '%{x}<br>Strategy: $%{y:,.0f}<extra></extra>',
@@ -59,7 +65,7 @@ const EquityCurveChart = ({ equityCurve, initialCapital, isLoading, showBuyHold 
       x: dates,
       y: buyHoldEquity,
       name: 'Buy & Hold',
-      line: { color: '#4caf50', width: 2, dash: 'dot' },
+      line: { color: colors.buyHold, width: 2, dash: 'dot' },
       xaxis: 'x',
       yaxis: 'y',
       visible: showBuyHold && buyHoldEquity[0] != null ? true : 'legendonly',
@@ -72,7 +78,7 @@ const EquityCurveChart = ({ equityCurve, initialCapital, isLoading, showBuyHold 
       x: [dates[0], dates[dates.length - 1]],
       y: [initialCapital || 100000, initialCapital || 100000],
       name: 'Initial Capital',
-      line: { color: '#999', width: 1, dash: 'dash' },
+      line: { color: colors.reference, width: 1, dash: 'dash' },
       xaxis: 'x',
       yaxis: 'y',
       showlegend: false,
@@ -85,9 +91,9 @@ const EquityCurveChart = ({ equityCurve, initialCapital, isLoading, showBuyHold 
       x: dates,
       y: drawdowns,
       name: 'Drawdown',
-      line: { color: '#dc004e', width: 1.5 },
+      line: { color: colors.drawdown, width: 1.5 },
       fill: 'tozeroy',
-      fillcolor: 'rgba(220, 0, 78, 0.2)',
+      fillcolor: colors.drawdownFill,
       xaxis: 'x',
       yaxis: 'y2',
       hovertemplate: '%{x}<br>Drawdown: %{y:.1f}%<extra></extra>',
@@ -95,6 +101,7 @@ const EquityCurveChart = ({ equityCurve, initialCapital, isLoading, showBuyHold 
   ];
 
   const layout = {
+    ...plotlyTheme,
     grid: {
       rows: 2,
       columns: 1,
@@ -103,17 +110,17 @@ const EquityCurveChart = ({ equityCurve, initialCapital, isLoading, showBuyHold 
     },
     // Shared x-axis (only shows on bottom panel)
     xaxis: {
+      ...plotlyTheme.xaxis,
       showgrid: true,
-      gridcolor: '#e8e8e8',
       type: 'date',
       domain: [0, 1],
       anchor: 'y2',
     },
     // Top panel: Equity
     yaxis: {
-      title: { text: 'Equity ($)', standoff: 10 },
+      ...plotlyTheme.yaxis,
+      title: { text: 'Equity ($)', standoff: 10, font: { color: colors.text } },
       showgrid: true,
-      gridcolor: '#e8e8e8',
       tickformat: '$,.0f',
       domain: [0.35, 1.0], // Top 65%
       anchor: 'x',
@@ -121,9 +128,9 @@ const EquityCurveChart = ({ equityCurve, initialCapital, isLoading, showBuyHold 
     },
     // Bottom panel: Drawdown
     yaxis2: {
-      title: { text: 'Drawdown (%)', standoff: 10 },
+      ...plotlyTheme.yaxis,
+      title: { text: 'Drawdown (%)', standoff: 10, font: { color: colors.text } },
       showgrid: true,
-      gridcolor: '#e8e8e8',
       tickformat: '.0f',
       ticksuffix: '%',
       domain: [0.0, 0.28], // Bottom 28%
@@ -132,6 +139,7 @@ const EquityCurveChart = ({ equityCurve, initialCapital, isLoading, showBuyHold 
     },
     // Legend
     legend: {
+      ...plotlyTheme.legend,
       orientation: 'h',
       yanchor: 'bottom',
       y: 1.02,
@@ -150,11 +158,11 @@ const EquityCurveChart = ({ equityCurve, initialCapital, isLoading, showBuyHold 
         arrowhead: 2,
         arrowsize: 1,
         arrowwidth: 1,
-        arrowcolor: '#dc004e',
+        arrowcolor: colors.drawdown,
         ax: 40,
         ay: -25,
-        font: { size: 11, color: '#dc004e' },
-        bgcolor: 'rgba(255,255,255,0.8)',
+        font: { size: 11, color: colors.drawdown },
+        bgcolor: colors.annotationBg,
         borderpad: 3,
       },
     ],
@@ -168,15 +176,13 @@ const EquityCurveChart = ({ equityCurve, initialCapital, isLoading, showBuyHold 
         y1: maxDDValue,
         xref: 'x',
         yref: 'y2',
-        line: { color: '#dc004e', width: 1, dash: 'dot' },
+        line: { color: colors.drawdown, width: 1, dash: 'dot' },
       },
     ],
     // General layout
     autosize: true,
     height: 500,
     margin: { l: 70, r: 30, t: 50, b: 50 },
-    plot_bgcolor: '#fafafa',
-    paper_bgcolor: '#ffffff',
     hovermode: 'x unified',
   };
 

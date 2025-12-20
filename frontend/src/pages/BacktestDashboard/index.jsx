@@ -19,6 +19,7 @@ import useBacktestStore from '../../store/backtestStore';
 import { runBacktest } from '../../api/backtestApi';
 import EquityCurveChart from '../../components/Charts/EquityCurveChart';
 import MetricsPanel from '../../components/Results/MetricsPanel';
+import MonteCarloPanel from '../../components/MonteCarlo/MonteCarloPanel';
 
 const ParameterInput = ({ label, value, onChange, min, max, step, unit }) => (
   <Box sx={{ mb: 2 }}>
@@ -317,6 +318,11 @@ const BacktestDashboard = () => {
             isLoading={isLoading}
             showBuyHold={showBuyHold}
           />
+        </Paper>
+
+        {/* Monte Carlo Analysis */}
+        <Paper elevation={3}>
+          <MonteCarloPanel backtestResults={results} />
         </Paper>
       </Box>
     </Box>
