@@ -11,15 +11,23 @@ import {
   Divider,
   Alert,
   CircularProgress,
+  Chip,
+  Stack,
 } from '@mui/material';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
 import RefreshIcon from '@mui/icons-material/Refresh';
 
 import useBacktestStore from '../../store/backtestStore';
 import { runBacktest } from '../../api/backtestApi';
+import useLiveMarket from '../../hooks/useLiveMarket';
 import EquityCurveChart from '../../components/Charts/EquityCurveChart';
 import MetricsPanel from '../../components/Results/MetricsPanel';
 import MonteCarloPanel from '../../components/MonteCarlo/MonteCarloPanel';
+import {
+  LiveModeToggle,
+  MarketStatusBadge,
+  LiveQuoteDisplay,
+} from '../../components/LiveMarket';
 
 const ParameterInput = ({ label, value, onChange, min, max, step, unit }) => (
   <Box sx={{ mb: 2 }}>
@@ -51,7 +59,32 @@ const BacktestDashboard = () => {
     reset,
   } = useBacktestStore();
 
+  // Live market data
+  const {
+    isLiveMode,
+    setLiveMode,
+    spotPrice,
+    spotChange,
+    vix,
+    vixChange,
+    lastUpdated,
+    isLoading: isLiveLoading,
+    error: liveError,
+    isMarketOpen,
+    marketPhase,
+    refresh: refreshLive,
+  } = useLiveMarket('SPY');
+
   const [showBuyHold, setShowBuyHold] = useState(true);
+
+  // Coordinate live mode and demo mode - they're mutually exclusive
+  const handleLiveModeToggle = () => {
+    const newLiveMode = !isLiveMode;
+    setLiveMode(newLiveMode);
+    if (newLiveMode && config.demoMode) {
+      updateConfig('demoMode', false);
+    }
+  };
 
   const handleRunBacktest = async () => {
     setLoading(true);
@@ -67,6 +100,7 @@ const BacktestDashboard = () => {
         position_size_pct: config.positionSizePct,
         max_positions: config.maxPositions,
         demo_mode: config.demoMode,
+        selected_years: config.demoMode ? null : config.selectedYears,
         use_bayesian_lstm: config.useBayesianLstm,
         use_impact_model: config.useImpactModel,
         use_uncertainty_sizing: config.useUncertaintySizing,
@@ -122,6 +156,39 @@ const BacktestDashboard = () => {
           }
           sx={{ mb: 1 }}
         />
+
+        {/* Year Selector - only visible when not in Demo Mode */}
+        {!config.demoMode && (
+          <Box sx={{ mb: 2 }}>
+            <Typography variant="body2" gutterBottom>
+              Data Years
+            </Typography>
+            <Stack direction="row" spacing={0.5} sx={{ flexWrap: 'wrap', gap: 0.5 }}>
+              {[2019, 2020, 2021, 2024].map((year) => (
+                <Chip
+                  key={year}
+                  label={year}
+                  size="small"
+                  color={config.selectedYears?.includes(year) ? 'primary' : 'default'}
+                  onClick={() => {
+                    const currentYears = config.selectedYears || [];
+                    const newYears = currentYears.includes(year)
+                      ? currentYears.filter((y) => y !== year)
+                      : [...currentYears, year];
+                    if (newYears.length > 0) {
+                      updateConfig('selectedYears', newYears.sort());
+                    }
+                  }}
+                  variant={config.selectedYears?.includes(year) ? 'filled' : 'outlined'}
+                  sx={{ cursor: 'pointer' }}
+                />
+              ))}
+            </Stack>
+            <Typography variant="caption" color="textSecondary" sx={{ mt: 0.5, display: 'block' }}>
+              Select year(s) to load. More years = longer load time.
+            </Typography>
+          </Box>
+        )}
 
         <Box sx={{ mb: 2 }}>
           <TextField
@@ -266,13 +333,40 @@ const BacktestDashboard = () => {
 
         {isLoading && !config.demoMode && (
           <Typography variant="caption" color="textSecondary" sx={{ mt: 1, display: 'block' }}>
-            Loading 8M+ records, this may take 5+ min...
+            Loading {config.selectedYears?.length || 1} year(s) of data
+            (~{Math.round((config.selectedYears?.length || 1) * 1.5)} min first time, cached after)...
           </Typography>
         )}
       </Paper>
 
       {/* Right Panel - Results */}
       <Box sx={{ flex: 1, display: 'flex', flexDirection: 'column', gap: 3 }}>
+        {/* Live Market Header */}
+        <Paper elevation={1} sx={{ p: 2 }}>
+          <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              <Typography variant="h6">Market Data</Typography>
+              {isLiveMode && <MarketStatusBadge marketPhase={marketPhase} isOpen={isMarketOpen} />}
+            </Box>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+              {isLiveMode && (
+                <LiveQuoteDisplay
+                  symbol="SPY"
+                  spotPrice={spotPrice}
+                  spotChange={spotChange}
+                  vix={vix}
+                  vixChange={vixChange}
+                  lastUpdated={lastUpdated}
+                  isLoading={isLiveLoading}
+                  error={liveError}
+                  onRefresh={refreshLive}
+                />
+              )}
+              <LiveModeToggle isLiveMode={isLiveMode} onToggle={handleLiveModeToggle} />
+            </Box>
+          </Box>
+        </Paper>
+
         {error && (
           <Alert severity="error">
             {error}

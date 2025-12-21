@@ -4,13 +4,16 @@ Backtest execution service.
 Wraps the integrated backtest logic for API exposure.
 """
 
+import json
 import sys
 import time
 import random
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
+
+import pandas as pd
 
 # Add src and scripts paths
 project_root = Path(__file__).parent.parent.parent
@@ -37,9 +40,74 @@ from backend.schemas.backtest import (
     Phase2Status,
 )
 
+# Module-level cache for loaded data (persists across requests)
+_data_cache: Dict[str, pd.DataFrame] = {}
+
 
 class BacktestService:
     """Service for running backtests."""
+
+    def _load_years(self, data_dir: str, years: List[int]) -> pd.DataFrame:
+        """
+        Load specific years of options data with caching.
+
+        Args:
+            data_dir: Directory containing JSON options files
+            years: List of years to load (e.g., [2019, 2020])
+
+        Returns:
+            DataFrame with options data for requested years
+        """
+        global _data_cache
+
+        cache_key = f"{data_dir}:{','.join(map(str, sorted(years)))}"
+
+        if cache_key in _data_cache:
+            return _data_cache[cache_key]
+
+        data_path = Path(data_dir)
+        all_records = []
+
+        for year in years:
+            # Convert year to 2-digit format for filename
+            year_suffix = str(year)[-2:]
+            filename = f"spy_options_data_{year_suffix}.json"
+            filepath = data_path / filename
+
+            if not filepath.exists():
+                continue
+
+            with open(filepath, "r") as f:
+                data = json.load(f)
+
+            # Handle nested list structure
+            if isinstance(data, list) and len(data) > 0:
+                if isinstance(data[0], list):
+                    for day_records in data:
+                        all_records.extend(day_records)
+                else:
+                    all_records.extend(data)
+
+        if not all_records:
+            raise FileNotFoundError(f"No data found for years {years} in {data_dir}")
+
+        df = pd.DataFrame(all_records)
+
+        # Convert types (same as load_json_options_data)
+        df["date"] = pd.to_datetime(df["date"])
+        df["expiration"] = pd.to_datetime(df["expiration"])
+
+        numeric_cols = [
+            "strike", "last", "bid", "ask", "mark", "volume",
+            "open_interest", "implied_volatility", "delta",
+            "gamma", "theta", "vega"
+        ]
+        for col in numeric_cols:
+            if col in df.columns:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+
+        _data_cache[cache_key] = df
+        return df
 
     def _generate_demo_response(self, request: BacktestRequest) -> BacktestResponse:
         """Generate mock backtest data for UI testing."""
@@ -158,8 +226,12 @@ class BacktestService:
 
         start_time = time.time()
 
-        # Load options data
-        options_df = load_json_options_data(request.data_dir)
+        # Load options data (use year-based loading if specified)
+        if request.selected_years:
+            options_df = self._load_years(request.data_dir, request.selected_years)
+        else:
+            options_df = load_json_options_data(request.data_dir)
+
         market_df = prepare_market_data(options_df)
 
         if request.max_days:

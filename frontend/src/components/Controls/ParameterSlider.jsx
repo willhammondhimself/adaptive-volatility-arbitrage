@@ -1,7 +1,7 @@
 import React from 'react';
 import { Box, Slider, TextField, Typography } from '@mui/material';
 
-const ParameterSlider = ({ label, value, onChange, min, max, step, description }) => {
+const ParameterSlider = ({ label, value, onChange, min, max, step, description, disabled = false }) => {
   const handleSliderChange = (event, newValue) => {
     onChange(newValue);
   };
@@ -31,6 +31,7 @@ const ParameterSlider = ({ label, value, onChange, min, max, step, description }
           onBlur={handleBlur}
           size="small"
           type="number"
+          disabled={disabled}
           inputProps={{
             step,
             min,
@@ -51,6 +52,7 @@ const ParameterSlider = ({ label, value, onChange, min, max, step, description }
         min={min}
         max={max}
         step={step}
+        disabled={disabled}
         valueLabelDisplay="auto"
         sx={{
           '& .MuiSlider-thumb': {

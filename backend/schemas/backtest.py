@@ -40,6 +40,12 @@ class BacktestRequest(BaseModel):
         default=False, description="Return mock data for UI testing"
     )
 
+    # Year selection for faster loading
+    selected_years: Optional[List[int]] = Field(
+        default=None,
+        description="Years to load (e.g., [2019, 2020]). None loads all available.",
+    )
+
     # Phase 2 toggles
     use_bayesian_lstm: bool = Field(
         default=False, description="Use Bayesian LSTM for vol forecasting"

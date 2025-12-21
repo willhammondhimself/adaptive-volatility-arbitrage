@@ -12,6 +12,8 @@ const useBacktestStore = create((set) => ({
     maxPositions: 5,
     // Demo mode for instant response
     demoMode: true,
+    // Year selection for historical data (default to single year for speed)
+    selectedYears: [2019],
     // Phase 2 toggles
     useBayesianLstm: false,
     useImpactModel: false,
@@ -68,6 +70,7 @@ const useBacktestStore = create((set) => ({
         positionSizePct: 15.0,
         maxPositions: 5,
         demoMode: true,
+        selectedYears: [2019],
         useBayesianLstm: false,
         useImpactModel: false,
         useUncertaintySizing: false,

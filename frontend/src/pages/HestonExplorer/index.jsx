@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import {
   Box,
   Paper,
@@ -12,9 +12,15 @@ import {
 import { ViewInAr, GridOn, Refresh } from '@mui/icons-material';
 import useHestonStore from '../../store/hestonStore';
 import { useHestonPricing } from '../../hooks/useHestonPricing';
+import useLiveMarket from '../../hooks/useLiveMarket';
 import ParameterSlider from '../../components/Controls/ParameterSlider';
 import HestonHeatmap from '../../components/Charts/HestonHeatmap';
 import HestonSurface3D from '../../components/Charts/HestonSurface3D';
+import {
+  LiveModeToggle,
+  MarketStatusBadge,
+  LiveQuoteDisplay,
+} from '../../components/LiveMarket';
 
 const HestonExplorer = () => {
   const {
@@ -29,6 +35,29 @@ const HestonExplorer = () => {
     reset,
   } = useHestonStore();
 
+  // Live market data
+  const {
+    isLiveMode,
+    toggleLiveMode,
+    spotPrice,
+    spotChange,
+    vix,
+    vixChange,
+    lastUpdated,
+    isLoading: isLiveLoading,
+    error: liveError,
+    isMarketOpen,
+    marketPhase,
+    refresh,
+  } = useLiveMarket('SPY');
+
+  // Update spot price when live data arrives
+  useEffect(() => {
+    if (isLiveMode && spotPrice) {
+      setSpot(spotPrice);
+    }
+  }, [isLiveMode, spotPrice, setSpot]);
+
   // Fetch price surface when parameters change
   useHestonPricing();
 
@@ -41,13 +70,34 @@ const HestonExplorer = () => {
   return (
     <Box sx={{ p: 3 }}>
       <Box sx={{ mb: 3 }}>
-        <Typography variant="h4" gutterBottom fontWeight="bold">
-          Heston Option Pricing Explorer
-        </Typography>
-        <Typography variant="body2" color="textSecondary">
-          Interactive 2D/3D visualization of option prices using the Heston stochastic volatility
-          model with FFT
-        </Typography>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', mb: 1 }}>
+          <Typography variant="h4" fontWeight="bold">
+            Heston Option Pricing Explorer
+          </Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 2 }}>
+            {isLiveMode && <MarketStatusBadge marketPhase={marketPhase} isOpen={isMarketOpen} />}
+            <LiveModeToggle isLiveMode={isLiveMode} onToggle={toggleLiveMode} />
+          </Box>
+        </Box>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <Typography variant="body2" color="textSecondary">
+            Interactive 2D/3D visualization of option prices using the Heston stochastic volatility
+            model with FFT
+          </Typography>
+          {isLiveMode && (
+            <LiveQuoteDisplay
+              symbol="SPY"
+              spotPrice={spotPrice}
+              spotChange={spotChange}
+              vix={vix}
+              vixChange={vixChange}
+              lastUpdated={lastUpdated}
+              isLoading={isLiveLoading}
+              error={liveError}
+              onRefresh={refresh}
+            />
+          )}
+        </Box>
       </Box>
 
       <Box sx={{ display: 'flex', gap: 3 }}>
@@ -78,9 +128,10 @@ const HestonExplorer = () => {
             value={spot}
             onChange={setSpot}
             min={50}
-            max={200}
+            max={800}
             step={1}
-            description="Current stock price"
+            description={isLiveMode ? 'Live SPY price (auto-updated)' : 'Current stock price'}
+            disabled={isLiveMode}
           />
 
           {/* Initial Variance (v0) */}
