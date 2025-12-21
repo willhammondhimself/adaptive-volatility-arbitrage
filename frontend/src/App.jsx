@@ -13,10 +13,12 @@ import {
 } from '@mui/material';
 import ShowChartIcon from '@mui/icons-material/ShowChart';
 import TimelineIcon from '@mui/icons-material/Timeline';
+import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import Brightness4Icon from '@mui/icons-material/Brightness4';
 import Brightness7Icon from '@mui/icons-material/Brightness7';
 import HestonExplorer from './pages/HestonExplorer';
 import BacktestDashboard from './pages/BacktestDashboard';
+import PaperTrading from './pages/PaperTrading';
 
 // Theme mode context
 const ThemeModeContext = createContext({
@@ -97,6 +99,17 @@ function Navigation() {
           >
             Backtest Dashboard
           </Button>
+          <Button
+            component={Link}
+            to="/paper-trading"
+            color="inherit"
+            startIcon={<TrendingUpIcon />}
+            sx={{
+              backgroundColor: location.pathname === '/paper-trading' ? 'rgba(255,255,255,0.15)' : 'transparent',
+            }}
+          >
+            Paper Trading
+          </Button>
         </Box>
         <IconButton onClick={toggleMode} color="inherit" title={`Switch to ${mode === 'dark' ? 'light' : 'dark'} mode`}>
           {mode === 'dark' ? <Brightness7Icon /> : <Brightness4Icon />}
@@ -130,6 +143,7 @@ function App() {
           <Routes>
             <Route path="/" element={<HestonExplorer />} />
             <Route path="/backtest" element={<BacktestDashboard />} />
+            <Route path="/paper-trading" element={<PaperTrading />} />
           </Routes>
         </BrowserRouter>
       </ThemeProvider>

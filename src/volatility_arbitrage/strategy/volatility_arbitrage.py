@@ -137,6 +137,15 @@ class VolatilityArbitrageConfig:
     # Risk management
     max_loss_pct: Decimal = Decimal("50.0")  # Stop loss at 50% of premium
 
+    # Partial profit taking (reduces return autocorrelation)
+    use_profit_taking: bool = True
+    profit_take_levels: list = field(
+        default_factory=lambda: [Decimal("0.25"), Decimal("0.50"), Decimal("0.75")]
+    )
+    profit_take_sizes: list = field(
+        default_factory=lambda: [Decimal("0.33"), Decimal("0.33"), Decimal("0.34")]
+    )
+
     # Regime detection (optional)
     use_regime_detection: bool = False
     regime_params: Optional[dict[int, RegimeParameters]] = None  # regime_id -> parameters

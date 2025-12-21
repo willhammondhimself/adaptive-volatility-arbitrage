@@ -202,7 +202,7 @@ const HestonExplorer = () => {
 
           {/* Performance Info */}
           {priceSurface && (
-            <Box sx={{ mt: 3, p: 2, bgcolor: '#f5f5f5', borderRadius: 1 }}>
+            <Box sx={{ mt: 3, p: 2, bgcolor: 'action.hover', borderRadius: 1 }}>
               <Typography variant="caption" display="block" gutterBottom>
                 <strong>Computation Time:</strong> {priceSurface.computation_time_ms.toFixed(2)}ms
               </Typography>

@@ -50,6 +50,13 @@ strategy:
   # Risk Management
   max_loss_pct: 50.0  # Stop loss at 50% of premium paid
 
+  # ===== PARTIAL PROFIT TAKING (Reduces Return Autocorrelation) =====
+  # Scale out of positions at profit milestones instead of holding to full target
+  # Levels are % of position P&L (not target), calibrated to actual return distribution
+  use_profit_taking: true
+  profit_take_levels: [0.04, 0.07, 0.10]  # Take profit at 4%, 7%, 10% returns (match profit target)
+  profit_take_sizes: [0.25, 0.35, 0.40]    # Close 25%, 35%, 40% of position (back-loaded)
+
   # ===== QV STRATEGY CONFIGURATION =====
   # Enable the 6-signal consensus model instead of simple IV-RV spread
   use_qv_strategy: true
@@ -124,6 +131,14 @@ strategy:
   kelly_max_position_pct: 0.10
   kelly_min_position_pct: 0.01
 
+  # ===== NW-ADJUSTED POSITION SIZING (Reduces autocorrelation impact) =====
+  # Scale positions by ratio of simple vol to NW-adjusted vol
+  # When autocorrelation is high, NW vol > simple vol, so position gets smaller
+  use_nw_position_sizing: true
+  nw_sizing_lookback: 60  # Days of returns for NW vol calculation
+  nw_sizing_min_scalar: 0.50  # Floor - never scale below 50%
+  nw_sizing_max_scalar: 1.50  # Cap - never scale above 150%
+
   # Signal Veto Rules (protective filters) - BALANCED FOR QUALITY + RETURNS
   use_signal_veto: true                 # ENABLED - filter dangerous trades
   veto_vix_extreme_threshold: 40.0      # Block short vol at VIX > 40
@@ -150,6 +165,13 @@ strategy:
   use_regime_detection: true
   regime_lookback_period: 60  # Days of returns for regime detection
   exit_on_regime_transition: false  # Exit all positions when regime changes
+
+  # ===== REGIME DURATION DECAY (Reduces Return Autocorrelation) =====
+  # Penalize signals that fire repeatedly in same regime
+  # As we stay in a regime longer, the "edge" from that regime is likely captured
+  use_regime_duration_decay: false  # Tested - didn't improve NW Sharpe
+  regime_duration_half_life: 60  # Signal strength halves every 60 days in same regime
+  regime_duration_min_scalar: 0.75  # Floor - never scale below 75% of original signal
 
   # ===== STRATEGY ENHANCEMENTS (ABLATION STUDY) =====
   # Each enhancement can be toggled independently for ablation testing

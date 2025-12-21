@@ -8,14 +8,28 @@ Supports both:
 """
 
 import argparse
+import io
 import json
+import sys
 from collections import deque
+from contextlib import contextmanager
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
 import numpy as np
+
+
+@contextmanager
+def suppress_stdout():
+    """Context manager to suppress stdout."""
+    old_stdout = sys.stdout
+    sys.stdout = io.StringIO()
+    try:
+        yield
+    finally:
+        sys.stdout = old_stdout
 
 from volatility_arbitrage.backtest.metrics import calculate_sharpe_ratio
 from volatility_arbitrage.core.config import load_strategy_config
@@ -522,6 +536,34 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
     else:
         print(f"  E7 RV Method: CLOSE_TO_CLOSE (default)")
 
+    # ===== PARTIAL PROFIT TAKING (Reduces Return Autocorrelation) =====
+    use_profit_taking = strategy_cfg.get('use_profit_taking', True)
+    profit_take_levels = strategy_cfg.get('profit_take_levels', [0.25, 0.50, 0.75])
+    profit_take_sizes = strategy_cfg.get('profit_take_sizes', [0.33, 0.33, 0.34])
+    if use_profit_taking:
+        print(f"  Partial Profit Taking: ENABLED (levels: {[f'{x*100:.0f}%' for x in profit_take_levels]})")
+    else:
+        print(f"  Partial Profit Taking: DISABLED")
+
+    # ===== REGIME DURATION DECAY (Reduces Return Autocorrelation) =====
+    use_regime_duration_decay = strategy_cfg.get('use_regime_duration_decay', False)
+    regime_duration_half_life = strategy_cfg.get('regime_duration_half_life', 15)
+    regime_duration_min_scalar = strategy_cfg.get('regime_duration_min_scalar', 0.25)
+    if use_regime_duration_decay:
+        print(f"  Regime Duration Decay: ENABLED (half-life={regime_duration_half_life}d, min={regime_duration_min_scalar})")
+    else:
+        print(f"  Regime Duration Decay: DISABLED")
+
+    # ===== NW-ADJUSTED POSITION SIZING (Reduces autocorrelation impact) =====
+    use_nw_position_sizing = strategy_cfg.get('use_nw_position_sizing', False)
+    nw_sizing_lookback = strategy_cfg.get('nw_sizing_lookback', 60)
+    nw_sizing_min_scalar = strategy_cfg.get('nw_sizing_min_scalar', 0.50)
+    nw_sizing_max_scalar = strategy_cfg.get('nw_sizing_max_scalar', 1.50)
+    if use_nw_position_sizing:
+        print(f"  NW Position Sizing: ENABLED (lookback={nw_sizing_lookback}d, range=[{nw_sizing_min_scalar}, {nw_sizing_max_scalar}])")
+    else:
+        print(f"  NW Position Sizing: DISABLED")
+
     # Z-SCORE ADAPTIVE THRESHOLDS (Anti-Overfitting)
     # Instead of static percentile/premium thresholds that overfit to 2019-2022,
     # use z-scores that automatically adapt to current market regime
@@ -557,6 +599,19 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
     trades = []
     position_pnl = 0  # Track cumulative P&L for current position
     entry_position_size = 0  # Track position size at entry for P&L calculation
+
+    # Partial profit taking state
+    profit_levels_taken = set()  # Track which profit levels have been hit
+    remaining_position_fraction = 1.0  # Fraction of original position still open
+
+    # Regime duration decay state
+    current_regime = None  # Track current regime classification
+    days_in_regime = 0  # Count days in current regime
+
+    # NW position sizing state - track returns for rolling NW calculation
+    from collections import deque
+    nw_return_buffer = deque(maxlen=nw_sizing_lookback)
+    prev_equity = initial_capital
 
     # Pre-calculate spot and RV
     dates = sorted(options_df['date'].unique())
@@ -654,7 +709,8 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
             theta_daily = -avg_straddle_premium * 100 / 45  # Premium decay over 45 days
             theta_pnl = -position * abs(theta_daily) * num_straddles
 
-            daily_pnl = vega_pnl + theta_pnl
+            # Scale by remaining position fraction (partial profit taking)
+            daily_pnl = (vega_pnl + theta_pnl) * remaining_position_fraction
 
         # Calculate holding period
         days_held = 0
@@ -786,6 +842,32 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
         is_stressed_regime = rv_percentile > 0.50
         is_low_vol_regime = rv_percentile < 0.30
 
+        # ===== REGIME DURATION DECAY =====
+        # Track current regime and apply decay to signals
+        if is_crisis_regime:
+            new_regime = 'crisis'
+        elif is_elevated_regime:
+            new_regime = 'elevated'
+        elif is_stressed_regime:
+            new_regime = 'stressed'
+        elif is_low_vol_regime:
+            new_regime = 'low'
+        else:
+            new_regime = 'normal'
+
+        if new_regime == current_regime:
+            days_in_regime += 1
+        else:
+            current_regime = new_regime
+            days_in_regime = 1
+
+        # Calculate regime duration decay scalar
+        regime_duration_scalar = 1.0
+        if use_regime_duration_decay and position == 0:  # Only apply to new entries
+            # Exponential decay: scalar = 0.5^(days/half_life)
+            raw_scalar = 0.5 ** (days_in_regime / regime_duration_half_life)
+            regime_duration_scalar = max(raw_scalar, regime_duration_min_scalar)
+
         # Tiered z-thresholds for SHORT VOL (protective in high-vol regimes)
         if is_crisis_regime:
             z_threshold = 3.0  # Extremely high bar (effectively blocks most short vol)
@@ -865,6 +947,44 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                 vov_scalar = vov_generator.get_position_scalar(signal_type)
                 position_size *= vov_scalar
 
+            # ===== REGIME DURATION DECAY: Apply at entry =====
+            if use_regime_duration_decay and (short_vol_entry or long_vol_entry):
+                position_size *= regime_duration_scalar
+
+            # ===== NW-ADJUSTED POSITION SIZING: Apply at entry =====
+            nw_sizing_scalar = 1.0
+            if use_nw_position_sizing and (short_vol_entry or long_vol_entry) and len(nw_return_buffer) >= 20:
+                # Calculate simple vol and NW-adjusted vol
+                returns_arr = np.array(nw_return_buffer)
+                simple_std = returns_arr.std()
+
+                if simple_std > 1e-8:
+                    # Calculate NW adjustment factor
+                    n = len(returns_arr)
+                    max_lag = int(np.floor(4 * (n / 100) ** (2/9)))
+                    max_lag = max(1, min(max_lag, n // 4))
+
+                    # Calculate autocorrelations
+                    adjustment = 1.0
+                    returns_pd = pd.Series(returns_arr)
+                    for i in range(1, max_lag + 1):
+                        if i < len(returns_pd):
+                            autocorr = returns_pd.autocorr(lag=i)
+                            if not np.isnan(autocorr):
+                                weight = 1 - i / (max_lag + 1)  # Bartlett kernel
+                                adjustment += 2 * weight * autocorr
+
+                    # Cap adjustment
+                    adjustment = min(max(adjustment, 0.1), 10.0)
+                    nw_std = simple_std * np.sqrt(adjustment)
+
+                    # Scalar: reduce position when NW vol > simple vol (high autocorrelation)
+                    # Scale by simple_vol / nw_vol, capped to [min, max]
+                    if nw_std > 1e-8:
+                        nw_sizing_scalar = simple_std / nw_std
+                        nw_sizing_scalar = max(nw_sizing_min_scalar, min(nw_sizing_max_scalar, nw_sizing_scalar))
+                        position_size *= nw_sizing_scalar
+
             # ===== PHASE 2: APPLY LEVERAGE AT ENTRY =====
             leverage_multiplier = 1.0
             if config.use_leverage and (short_vol_entry or long_vol_entry):
@@ -884,6 +1004,9 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                 entry_position_size = position_size  # Track for P&L calculation
                 entry_signals = signals.copy()  # E5: Track signals for dynamic weighting
                 position_pnl = 0
+                # Reset partial profit taking state for new position
+                profit_levels_taken = set()
+                remaining_position_fraction = 1.0
 
                 cost = option_spread_cost * position_size * equity + commission_per_contract * 2
                 equity -= cost
@@ -901,6 +1024,9 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                     'term_structure_leverage': term_structure_leverage,
                     'vov_scalar': vov_scalar if vov_generator else 1.0,
                     'leverage_multiplier': leverage_multiplier,  # Phase 2
+                    'regime_duration_scalar': regime_duration_scalar,
+                    'nw_sizing_scalar': nw_sizing_scalar,
+                    'days_in_regime': days_in_regime,
                     'iv': atm_iv,
                     'rv': rv,
                     'iv_premium': features['iv_premium'],
@@ -919,6 +1045,9 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                 entry_position_size = position_size  # Track for P&L calculation
                 entry_signals = signals.copy()  # E5: Track signals for dynamic weighting
                 position_pnl = 0
+                # Reset partial profit taking state for new position
+                profit_levels_taken = set()
+                remaining_position_fraction = 1.0
 
                 cost = option_spread_cost * position_size * equity + commission_per_contract * 2
                 equity -= cost
@@ -936,6 +1065,9 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                     'term_structure_leverage': term_structure_leverage,
                     'vov_scalar': vov_scalar if vov_generator else 1.0,
                     'leverage_multiplier': leverage_multiplier,  # Phase 2
+                    'regime_duration_scalar': regime_duration_scalar,
+                    'nw_sizing_scalar': nw_sizing_scalar,
+                    'days_in_regime': days_in_regime,
                     'iv': atm_iv,
                     'rv': rv,
                     'iv_premium': features['iv_premium'],
@@ -950,6 +1082,58 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
             # Calculate position P&L as percentage of entry equity
             position_pnl += daily_pnl
             position_return = position_pnl / entry_equity if entry_equity else 0
+
+            # ===== PARTIAL PROFIT TAKING =====
+            # Scale out at profit milestones to reduce return autocorrelation
+            if use_profit_taking and remaining_position_fraction > 0:
+                for level, close_frac in zip(profit_take_levels, profit_take_sizes):
+                    if level not in profit_levels_taken and position_return >= level:
+                        # Calculate fraction of original position to close
+                        close_amount = close_frac * remaining_position_fraction
+
+                        # Calculate P&L for closed portion and adjust position tracking
+                        # close_amount is relative to remaining position, so actual fraction closed is close_amount
+                        partial_pnl = position_pnl * close_amount
+                        # Remove realized portion from position_pnl so future returns are based on remaining position only
+                        position_pnl -= partial_pnl
+
+                        # Pay transaction costs for partial exit
+                        partial_cost = option_spread_cost * close_amount * entry_position_size * equity + commission_per_contract
+                        equity -= partial_cost
+
+                        # Update remaining position
+                        remaining_position_fraction -= close_amount
+                        profit_levels_taken.add(level)
+
+                        trades.append({
+                            'date': date,
+                            'action': 'PARTIAL_EXIT',
+                            'exit_reason': f'PROFIT_TAKE_{int(level*100)}PCT',
+                            'consensus': consensus,
+                            'entry_consensus': entry_consensus,
+                            'iv': atm_iv,
+                            'rv': rv,
+                            'days_held': days_held,
+                            'position_return': position_return * 100,
+                            'close_fraction': close_amount,
+                            'remaining_fraction': remaining_position_fraction,
+                            'cost': partial_cost,
+                        })
+
+                        # If fully closed via partial exits, reset position
+                        if remaining_position_fraction <= 0.01:  # Essentially zero
+                            position = 0
+                            entry_date = None
+                            entry_consensus = 0
+                            entry_equity = None
+                            entry_iv = None
+                            entry_rv_percentile = None
+                            entry_position_size = 0
+                            entry_signals = {}
+                            position_pnl = 0
+                            profit_levels_taken = set()
+                            remaining_position_fraction = 1.0
+                            break
 
             # ===== E6: ASYMMETRIC PROFIT TARGETS =====
             # Get appropriate targets based on position direction
@@ -1027,9 +1211,18 @@ def run_qv_backtest(options_df: pd.DataFrame, config, initial_capital: float = 1
                 entry_position_size = 0
                 entry_signals = {}  # E5: Reset tracked signals
                 position_pnl = 0
+                # Reset partial profit taking state
+                profit_levels_taken = set()
+                remaining_position_fraction = 1.0
 
         equity += daily_pnl
         prev_iv = atm_iv
+
+        # Update NW return buffer for position sizing
+        if use_nw_position_sizing and prev_equity > 0:
+            daily_return = (equity - prev_equity) / prev_equity
+            nw_return_buffer.append(daily_return)
+        prev_equity = equity
 
         equity_curve.append({
             'date': date,
@@ -1217,6 +1410,17 @@ def main():
         default=None,
         help='End date filter (YYYY-MM-DD)'
     )
+    parser.add_argument(
+        '--mcpt',
+        action='store_true',
+        help='Run MCPT validation after backtest'
+    )
+    parser.add_argument(
+        '--mcpt-perms',
+        type=int,
+        default=500,
+        help='Number of MCPT permutations (default 500)'
+    )
     args = parser.parse_args()
 
     # Load config
@@ -1244,6 +1448,43 @@ def main():
 
     # Run backtest
     results = run_qv_backtest(options_df, config, args.capital, config_path=args.config)
+
+    # Run MCPT validation if requested
+    if args.mcpt:
+        from volatility_arbitrage.testing.mcpt.config import MCPTConfig
+        from volatility_arbitrage.testing.mcpt.insample_test import run_insample_mcpt
+
+        print("\n" + "=" * 60)
+        print("MCPT VALIDATION")
+        print("=" * 60)
+
+        mcpt_config = MCPTConfig(
+            n_permutations=args.mcpt_perms,
+            warmup_days=60,
+            random_seed=42,
+        )
+
+        def strategy_func(df):
+            with suppress_stdout():
+                return run_qv_backtest(
+                    df, config, args.capital,
+                    config_path=args.config
+                )
+
+        result = run_insample_mcpt(
+            options_df,
+            strategy_func,
+            mcpt_config,
+            objective='nw_sharpe',
+            use_parallel=False,  # Sequential - avoids pickle issues with local func
+        )
+
+        print(f"\n{'=' * 60}")
+        print("MCPT SUMMARY")
+        print(f"{'=' * 60}")
+        print(f"NW Sharpe: {result.real_metric:.3f}")
+        print(f"p-value:   {result.p_value:.4f}")
+        print(f"Status:    {result.status}")
 
 
 if __name__ == "__main__":
