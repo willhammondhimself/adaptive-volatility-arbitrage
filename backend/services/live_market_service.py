@@ -4,11 +4,31 @@ Live market data service.
 Wraps Yahoo Finance data fetchers with TTL caching for API responses.
 """
 
+import math
 import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 import pytz
+import pandas as pd
+
+
+def _safe_int(value) -> Optional[int]:
+    """Safely convert to int, handling NaN."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    if pd.isna(value):
+        return None
+    return int(value)
+
+
+def _safe_float(value) -> Optional[float]:
+    """Safely convert to float, handling NaN."""
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return None
+    if pd.isna(value):
+        return None
+    return float(value)
 
 # Add src path for data fetchers
 project_root = Path(__file__).parent.parent.parent
@@ -137,12 +157,12 @@ class LiveMarketService:
                 calls.append(
                     OptionContractResponse(
                         strike=float(row["strike"]),
-                        bid=float(row["bid"]) if row["bid"] else None,
-                        ask=float(row["ask"]) if row["ask"] else None,
-                        last_price=float(row["lastPrice"]) if row["lastPrice"] else None,
-                        volume=int(row["volume"]) if row["volume"] else None,
-                        open_interest=int(row["openInterest"]) if row["openInterest"] else None,
-                        implied_volatility=float(row["impliedVolatility"]) if row["impliedVolatility"] else None,
+                        bid=_safe_float(row["bid"]),
+                        ask=_safe_float(row["ask"]),
+                        last_price=_safe_float(row["lastPrice"]),
+                        volume=_safe_int(row["volume"]),
+                        open_interest=_safe_int(row["openInterest"]),
+                        implied_volatility=_safe_float(row["impliedVolatility"]),
                     )
                 )
 
@@ -152,12 +172,12 @@ class LiveMarketService:
                 puts.append(
                     OptionContractResponse(
                         strike=float(row["strike"]),
-                        bid=float(row["bid"]) if row["bid"] else None,
-                        ask=float(row["ask"]) if row["ask"] else None,
-                        last_price=float(row["lastPrice"]) if row["lastPrice"] else None,
-                        volume=int(row["volume"]) if row["volume"] else None,
-                        open_interest=int(row["openInterest"]) if row["openInterest"] else None,
-                        implied_volatility=float(row["impliedVolatility"]) if row["impliedVolatility"] else None,
+                        bid=_safe_float(row["bid"]),
+                        ask=_safe_float(row["ask"]),
+                        last_price=_safe_float(row["lastPrice"]),
+                        volume=_safe_int(row["volume"]),
+                        open_interest=_safe_int(row["openInterest"]),
+                        implied_volatility=_safe_float(row["impliedVolatility"]),
                     )
                 )
 

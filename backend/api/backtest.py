@@ -6,16 +6,20 @@ from fastapi import APIRouter, HTTPException
 from backend.schemas.backtest import (
     BacktestRequest,
     BacktestResponse,
+    DeltaHedgedRequest,
+    DeltaHedgedResponse,
     MonteCarloRequest,
     MonteCarloResponse,
 )
 from backend.services.backtest_service import BacktestService
+from backend.services.delta_hedged_service import DeltaHedgedService
 from backend.services.monte_carlo_service import MonteCarloService
 
 router = APIRouter(prefix="/api/v1/backtest", tags=["backtest"])
 
 # Initialize services (singleton)
 backtest_service = BacktestService()
+delta_hedged_service = DeltaHedgedService()
 monte_carlo_service = MonteCarloService()
 
 
@@ -94,4 +98,42 @@ async def run_monte_carlo(request: MonteCarloRequest) -> MonteCarloResponse:
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Monte Carlo simulation error: {str(e)}"
+        )
+
+
+@router.post("/delta-hedged", response_model=DeltaHedgedResponse)
+async def run_delta_hedged(request: DeltaHedgedRequest) -> DeltaHedgedResponse:
+    """
+    Run delta-hedged backtest with P&L attribution.
+
+    Simulates a delta-neutral options portfolio and decomposes P&L into:
+    - **Delta P&L**: Should be ~0 if hedging is effective
+    - **Gamma P&L**: Convexity gains from price moves (½Γ·ΔS²)
+    - **Vega P&L**: Gains from IV changes (ν·Δσ)
+    - **Theta P&L**: Time decay
+    - **Transaction costs**: From rebalancing the hedge
+
+    The key insight: Vega+Gamma P&L is the alpha source. A properly hedged
+    portfolio shows flat Delta P&L while Vega+Gamma drifts positive.
+
+    **Input:**
+    - days: Simulation length (5-365)
+    - initial_spot/iv: Starting conditions
+    - strike/expiry_days: Option parameters
+    - rebalance_frequency: continuous|hourly|four_hour|daily
+    - delta_threshold: Rebalance when |delta| exceeds this
+
+    **Output:**
+    - metrics: Sharpe ratios, total P&L, hedge effectiveness (R²)
+    - attribution: Time series of cumulative P&L by component
+
+    **Performance:** ~100-500ms depending on simulation length
+    """
+    try:
+        return delta_hedged_service.run(request)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, detail=f"Delta-hedged backtest error: {str(e)}"
         )

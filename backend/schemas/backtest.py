@@ -186,3 +186,71 @@ class MonteCarloResponse(BaseModel):
     )
 
     computation_time_ms: float
+
+
+# Delta-Hedged Backtest Schemas
+
+
+class DeltaHedgedRequest(BaseModel):
+    """Request for delta-hedged backtest."""
+
+    days: int = Field(default=30, ge=5, le=365, description="Days to simulate")
+    initial_spot: float = Field(default=450.0, gt=0, description="Initial spot price")
+    initial_iv: float = Field(default=0.20, ge=0.05, le=1.0, description="Initial IV")
+    drift: float = Field(default=0.05, description="Annual drift")
+    vol_of_vol: float = Field(default=0.5, ge=0.1, le=2.0, description="Vol of vol")
+    mean_reversion: float = Field(default=2.0, ge=0.1, le=10.0, description="Mean reversion")
+
+    strike: float = Field(default=450.0, gt=0, description="Option strike")
+    expiry_days: int = Field(default=45, ge=7, le=365, description="Days to expiry")
+    option_type: str = Field(default="call", pattern="^(call|put)$")
+    option_position: int = Field(default=10, ge=1, le=100, description="Contracts")
+
+    rebalance_frequency: str = Field(
+        default="daily",
+        pattern="^(continuous|hourly|four_hour|daily)$",
+        description="Hedge rebalance frequency",
+    )
+    delta_threshold: float = Field(
+        default=0.10, ge=0.01, le=1.0, description="Delta threshold for rebalancing"
+    )
+    daily_volume: float = Field(
+        default=50_000_000.0, gt=0, description="Daily volume for cost model"
+    )
+
+
+class AttributionPoint(BaseModel):
+    """Single point in P&L attribution time series."""
+
+    timestamp: str
+    total_pnl: float
+    delta_pnl: float
+    gamma_pnl: float
+    vega_pnl: float
+    theta_pnl: float
+    transaction_costs: float
+
+
+class DeltaHedgedMetrics(BaseModel):
+    """Metrics from delta-hedged backtest."""
+
+    total_pnl: float = Field(..., description="Total P&L")
+    total_sharpe: float = Field(..., description="Sharpe of total returns")
+    vega_gamma_pnl: float = Field(..., description="Combined vega+gamma P&L (alpha)")
+    vega_gamma_sharpe: float = Field(..., description="Sharpe of vega+gamma (key metric)")
+    delta_pnl: float = Field(..., description="Delta P&L (should be ~0)")
+    theta_pnl: float = Field(..., description="Theta P&L")
+    transaction_costs: float = Field(..., description="Total transaction costs")
+    rebalance_count: int = Field(..., description="Number of rebalances")
+    hedge_effectiveness: float = Field(
+        ..., ge=0, le=1, description="R^2 of hedge (1 = perfect)"
+    )
+    max_drawdown: float = Field(..., description="Maximum drawdown")
+
+
+class DeltaHedgedResponse(BaseModel):
+    """Response from delta-hedged backtest."""
+
+    metrics: DeltaHedgedMetrics
+    attribution: List[AttributionPoint]
+    computation_time_ms: float

@@ -2,8 +2,6 @@
 
 ## Overview
 
-Clean, professional organization for production quantitative trading system.
-
 ```
 .
 ├── backend/              # FastAPI REST API
@@ -83,11 +81,3 @@ Comprehensive unit and integration tests.
 
 ### `/docs` - Documentation
 All project documentation and guides.
-
-## Clean Principles
-
-1. **No IDE files** - .vscode, .idea excluded via .gitignore
-2. **No generated files** - __pycache__, dist/, build/ excluded
-3. **No personal references** - Professional authorship only
-4. **Logical grouping** - Related code together
-5. **Clear naming** - Self-documenting directory names

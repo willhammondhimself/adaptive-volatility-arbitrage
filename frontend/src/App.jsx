@@ -14,11 +14,17 @@ import {
 import ShowChartIcon from '@mui/icons-material/ShowChart';
 import TimelineIcon from '@mui/icons-material/Timeline';
 import TrendingUpIcon from '@mui/icons-material/TrendingUp';
+import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
 import Brightness4Icon from '@mui/icons-material/Brightness4';
 import Brightness7Icon from '@mui/icons-material/Brightness7';
+import FunctionsIcon from '@mui/icons-material/Functions';
+import LayersIcon from '@mui/icons-material/Layers';
 import HestonExplorer from './pages/HestonExplorer';
 import BacktestDashboard from './pages/BacktestDashboard';
 import PaperTrading from './pages/PaperTrading';
+import DeltaHedgedBacktest from './pages/DeltaHedgedBacktest';
+import BlackScholesPlayground from './pages/BlackScholesPlayground';
+import SurfaceExplorer from './pages/SurfaceExplorer';
 
 // Theme mode context
 const ThemeModeContext = createContext({
@@ -110,6 +116,39 @@ function Navigation() {
           >
             Paper Trading
           </Button>
+          <Button
+            component={Link}
+            to="/delta-hedged"
+            color="inherit"
+            startIcon={<AccountBalanceIcon />}
+            sx={{
+              backgroundColor: location.pathname === '/delta-hedged' ? 'rgba(255,255,255,0.15)' : 'transparent',
+            }}
+          >
+            Delta Hedged
+          </Button>
+          <Button
+            component={Link}
+            to="/bs-playground"
+            color="inherit"
+            startIcon={<FunctionsIcon />}
+            sx={{
+              backgroundColor: location.pathname === '/bs-playground' ? 'rgba(255,255,255,0.15)' : 'transparent',
+            }}
+          >
+            BS Playground
+          </Button>
+          <Button
+            component={Link}
+            to="/surface-explorer"
+            color="inherit"
+            startIcon={<LayersIcon />}
+            sx={{
+              backgroundColor: location.pathname === '/surface-explorer' ? 'rgba(255,255,255,0.15)' : 'transparent',
+            }}
+          >
+            Surface Explorer
+          </Button>
         </Box>
         <IconButton onClick={toggleMode} color="inherit" title={`Switch to ${mode === 'dark' ? 'light' : 'dark'} mode`}>
           {mode === 'dark' ? <Brightness7Icon /> : <Brightness4Icon />}
@@ -144,6 +183,9 @@ function App() {
             <Route path="/" element={<HestonExplorer />} />
             <Route path="/backtest" element={<BacktestDashboard />} />
             <Route path="/paper-trading" element={<PaperTrading />} />
+            <Route path="/delta-hedged" element={<DeltaHedgedBacktest />} />
+            <Route path="/bs-playground" element={<BlackScholesPlayground />} />
+            <Route path="/surface-explorer" element={<SurfaceExplorer />} />
           </Routes>
         </BrowserRouter>
       </ThemeProvider>
