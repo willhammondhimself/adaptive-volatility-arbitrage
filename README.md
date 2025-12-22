@@ -168,7 +168,7 @@ PYTHONPATH=./src:. python3 -m pytest tests/ -v
 
 ---
 
-## Known Limitations
+## Up-Next
 
 **Pricing model**:
 - Market impact modeled linearly (no square-root impact)
@@ -183,46 +183,6 @@ PYTHONPATH=./src:. python3 -m pytest tests/ -v
 **Data**:
 - Historical IV from EOD snapshots, not tick-level
 - No handling for option early exercise (American vs European)
-
----
-
-## Changelog
-
-### The Carr-Madan Sign Bug (Nov 2024)
-
-Spent three days chasing a bug where deep OTM puts were pricing 50-200% wrong.
-The FFT output looked fine, the characteristic function matched Gatheral's book,
-but prices were garbage.
-
-Turned out to be a sign error in the damping factor: `exp(-1j*b*v)` should be
-`exp(+1j*b*v)`. The original Carr-Madan paper has `exp(-alpha*k)` for the call
-transform, but when you work through the inverse FFT, the sign flips. I was
-copying from a QuantLib forum post that had it wrong.
-
-Also found the grid spacing was off. Used `b = lambda/2` (from some tutorial)
-instead of `b = pi/eta`. After fixing both, errors dropped from 30-200% to
-under 0.03%.
-
-See `research/lib/heston_fft.py:L142-L168` for the corrected implementation.
-
-### Dec 2024: QV Strategy
-
-6-signal consensus strategy for volatility arbitrage. Walk-forward validated
-across 5 folds (2019-2024), Monte Carlo bootstrap confirms Sharpe 95% CI
-entirely above 1.0.
-
-```bash
-PYTHONPATH=./src:. python scripts/run_backtest.py
-PYTHONPATH=./src:. python scripts/run_walkforward.py
-PYTHONPATH=./src:. python scripts/run_monte_carlo.py --block-bootstrap
-```
-
-### Nov 2024: Dashboard
-
-FastAPI + React dashboard for Heston parameter exploration. LRU cache gives
-80% hit rate on repeated queries.
-
----
 
 ## Data
 
