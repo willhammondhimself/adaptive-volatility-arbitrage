@@ -1,23 +1,29 @@
 """
 Real Options Data Loader
 
-Loads historical SPY options data from JSON files and converts to OptionChain format
+Loads historical SPY options data from Parquet/JSON files and converts to OptionChain format
 for use in backtesting with the QV strategy.
 
 Data source: SPY_Options_2019_24/ directory with daily options snapshots
-Format: List of days, each day is a list of option contracts with:
+Format: Each file contains option contracts with:
     - strike, expiration, type (call/put)
     - bid, ask, mark, volume, open_interest
     - implied_volatility, delta, gamma, theta, vega
+
+Performance:
+    - Parquet files: ~275MB total, loads in ~2 seconds
+    - JSON files: ~3.5GB total, loads in ~30 seconds (fallback)
+    - In-memory cache: stores all loaded data for fast date lookups
 """
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, date
 from decimal import Decimal
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-from dataclasses import dataclass
+from typing import Dict, List, Optional, Set, Tuple
+from dataclasses import dataclass, field
+from functools import lru_cache
 
 import pandas as pd
 import numpy as np
@@ -25,6 +31,96 @@ import numpy as np
 from volatility_arbitrage.core.types import OptionChain, OptionContract, OptionType
 
 logger = logging.getLogger(__name__)
+
+# Global cache keyed by (resolved data_dir, date/year) so two calls pointing
+# at different directories don't collide.
+_SNAPSHOT_CACHE: Dict[Tuple[str, date], "DailyOptionsSnapshot"] = {}
+_LOADED_YEARS: Set[Tuple[str, int]] = set()
+
+
+def _normalize_dir(data_dir: str) -> str:
+    """Resolve data_dir to a canonical absolute path string for cache keying."""
+    return str(Path(data_dir).resolve())
+
+
+def clear_cache() -> None:
+    """Clear the in-memory snapshot cache."""
+    global _SNAPSHOT_CACHE, _LOADED_YEARS
+    _SNAPSHOT_CACHE.clear()
+    _LOADED_YEARS.clear()
+    logger.info("Cleared options data cache")
+
+
+def get_snapshot_for_date(
+    target_date: date,
+    data_dir: str = "src/volatility_arbitrage/data/SPY_Options_2019_24"
+) -> Optional["DailyOptionsSnapshot"]:
+    """
+    Get cached snapshot for a specific date, loading the year if needed.
+
+    Args:
+        target_date: Date to look up (date or datetime)
+        data_dir: Path to options data directory
+
+    Returns:
+        DailyOptionsSnapshot or None if date not in data
+    """
+    # Normalize to date
+    if isinstance(target_date, datetime):
+        target_date = target_date.date()
+
+    key_dir = _normalize_dir(data_dir)
+    cache_key = (key_dir, target_date)
+
+    # Check cache first
+    if cache_key in _SNAPSHOT_CACHE:
+        return _SNAPSHOT_CACHE[cache_key]
+
+    # Load year if not already loaded for this directory
+    year = target_date.year
+    if (key_dir, year) not in _LOADED_YEARS:
+        try:
+            load_spy_options_year(year, data_dir)
+        except FileNotFoundError:
+            logger.warning(f"No data file for year {year}")
+            return None
+
+    # Check cache again after loading
+    return _SNAPSHOT_CACHE.get(cache_key)
+
+
+def _load_from_parquet(filepath: Path) -> List[List[dict]]:
+    """
+    Load options data from a Parquet file.
+
+    Args:
+        filepath: Path to .parquet file
+
+    Returns:
+        List of day_options (same format as JSON)
+    """
+    try:
+        import pyarrow.parquet as pq
+    except ImportError:
+        logger.warning("pyarrow not installed, falling back to JSON")
+        return None
+
+    logger.info(f"Loading from Parquet: {filepath}")
+    df = pd.read_parquet(filepath)
+
+    # Convert date column to string for compatibility
+    if 'date' in df.columns:
+        df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+    if 'expiration' in df.columns:
+        df['expiration'] = pd.to_datetime(df['expiration']).dt.strftime('%Y-%m-%d')
+
+    # Group by date and convert to list of dicts (same structure as JSON)
+    raw_data = []
+    for date_val, group in df.groupby('date'):
+        day_options = group.to_dict('records')
+        raw_data.append(day_options)
+
+    return raw_data
 
 
 @dataclass
@@ -58,6 +154,9 @@ def load_spy_options_year(year: int, data_dir: str) -> List[DailyOptionsSnapshot
     """
     Load SPY options data for a specific year.
 
+    Prefers Parquet files (fast) over JSON files (slow fallback).
+    Caches all loaded snapshots for fast date lookups.
+
     Args:
         year: Year to load (2019-2024)
         data_dir: Path to SPY_Options_2019_24 directory
@@ -65,16 +164,38 @@ def load_spy_options_year(year: int, data_dir: str) -> List[DailyOptionsSnapshot
     Returns:
         List of daily options snapshots
     """
-    filename = f"spy_options_data_{str(year)[-2:]}.json"
-    filepath = Path(data_dir) / filename
+    global _LOADED_YEARS, _SNAPSHOT_CACHE
 
-    if not filepath.exists():
-        raise FileNotFoundError(f"Options data file not found: {filepath}")
+    key_dir = _normalize_dir(data_dir)
 
-    logger.info(f"Loading options data from {filepath}")
+    # Check if already loaded for this directory
+    if (key_dir, year) in _LOADED_YEARS:
+        return [
+            snap for (kd, dt), snap in _SNAPSHOT_CACHE.items()
+            if kd == key_dir and dt.year == year
+        ]
 
-    with open(filepath, 'r') as f:
-        raw_data = json.load(f)
+    base_name = f"spy_options_data_{str(year)[-2:]}"
+    data_path = Path(data_dir)
+
+    # Try Parquet first (fast)
+    parquet_path = data_path / f"{base_name}.parquet"
+    json_path = data_path / f"{base_name}.json"
+
+    raw_data = None
+
+    if parquet_path.exists():
+        raw_data = _load_from_parquet(parquet_path)
+
+    # Fall back to JSON if Parquet failed or doesn't exist
+    if raw_data is None:
+        if not json_path.exists():
+            raise FileNotFoundError(
+                f"Options data file not found: {parquet_path} or {json_path}"
+            )
+        logger.info(f"Loading from JSON (slow): {json_path}")
+        with open(json_path, 'r') as f:
+            raw_data = json.load(f)
 
     snapshots = []
     for day_options in raw_data:
@@ -84,8 +205,14 @@ def load_spy_options_year(year: int, data_dir: str) -> List[DailyOptionsSnapshot
         snapshot = _process_day_options(day_options)
         if snapshot:
             snapshots.append(snapshot)
+            # Cache by (data_dir, date)
+            snap_date = snapshot.date.date() if isinstance(snapshot.date, datetime) else snapshot.date
+            _SNAPSHOT_CACHE[(key_dir, snap_date)] = snapshot
 
-    logger.info(f"Loaded {len(snapshots)} daily snapshots for {year}")
+    # Mark year as loaded for this directory
+    _LOADED_YEARS.add((key_dir, year))
+
+    logger.info(f"Loaded {len(snapshots)} daily snapshots for {year} (cached)")
     return snapshots
 
 
