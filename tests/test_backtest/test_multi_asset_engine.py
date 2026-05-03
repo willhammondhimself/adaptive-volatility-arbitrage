@@ -17,7 +17,7 @@ from volatility_arbitrage.backtest import (
 )
 from volatility_arbitrage.core.config import BacktestConfig
 from volatility_arbitrage.core.types import OptionType
-from volatility_arbitrage.strategy.base import BuyAndHoldStrategy
+from volatility_arbitrage.strategy.base import BuyAndHoldStrategy, Signal
 
 
 @pytest.mark.unit
@@ -383,6 +383,46 @@ class TestCostModelIntegration:
         assert result_no_cost.final_capital != result_with_cost.final_capital
 
 
+@pytest.mark.integration
+class TestOptionExpiryPropagation:
+    """Regression tests for F3: real expiry must reach MultiAssetPosition."""
+
+    def test_real_expiry_propagated_to_position(self):
+        """`_execute_option_signal` must store the symbol's expiry, not 30d placeholder."""
+        config = BacktestConfig(
+            initial_capital=Decimal("100000"),
+            commission_rate=Decimal("0"),
+            slippage=Decimal("0"),
+        )
+        strategy = BuyAndHoldStrategy("SPY", 1)
+        engine = MultiAssetBacktestEngine(config, strategy)
+
+        # 7-DTE option: entry 2024-01-02, expiry 2024-01-09
+        symbol = "SPY_CALL_470_20240109"
+        timestamp = datetime(2024, 1, 2)
+        day_data = pd.DataFrame({
+            "timestamp": [timestamp],
+            "symbol": ["SPY"],
+            "open": [470.0],
+            "high": [471.0],
+            "low": [469.0],
+            "close": [470.0],
+            "volume": [1_000_000],
+        })
+
+        signal = Signal(symbol=symbol, action="buy", quantity=1)
+        engine._execute_option_signal(signal, timestamp, day_data)
+
+        assert symbol in engine.multi_positions, "Option signal should produce a position"
+        pos = engine.multi_positions[symbol]
+        assert pos.expiry == datetime(2024, 1, 9), (
+            f"Expiry must be parsed from symbol (2024-01-09), got {pos.expiry}. "
+            f"30d placeholder would yield {timestamp + timedelta(days=30)}."
+        )
+        # Sanity: must not be the 30-day placeholder
+        assert pos.expiry != timestamp + timedelta(days=30)
+
+
 @pytest.mark.unit
 class TestBacktestConfigPhase2:
     """Tests for Phase 2 configuration fields."""
@@ -412,3 +452,52 @@ class TestBacktestConfigPhase2:
         assert config.impact_half_spread_bps == Decimal("5.0")
         # Default impact coefficient of 0.1
         assert config.impact_coefficient == Decimal("0.1")
+
+
+@pytest.mark.unit
+class TestIntradayTTEPrecision:
+    """Regression: option signals at intraday timestamps must not truncate TTE to 0."""
+
+    def test_intraday_signal_day_before_expiry_not_skipped(self):
+        """An option signal at 16:00 the day before expiry has positive TTE.
+
+        Pre-fix: (expiry@midnight - timestamp).days == 0 → skipped as expired.
+        Post-fix: seconds-based TTE is ~32h/8760h > 0 → trade executes.
+        """
+        from volatility_arbitrage.core.config import VolatilityArbitrageConfig
+
+        config = BacktestConfig(initial_capital=Decimal("100000"))
+        strategy_config = VolatilityArbitrageConfig(use_real_options_data=False)
+        strategy = BuyAndHoldStrategy("SPY", 1)
+        engine = MultiAssetBacktestEngine(config, strategy, strategy_config=strategy_config)
+
+        timestamp = datetime(2024, 6, 14, 16, 0, 0)
+        symbol = "SPY_CALL_440_20240615"
+        signal = Signal(symbol=symbol, action="buy", quantity=1, reason="regression")
+
+        day_data = pd.DataFrame({
+            "timestamp": [timestamp],
+            "symbol": ["SPY"],
+            "open": [440.0],
+            "high": [441.0],
+            "low": [439.0],
+            "close": [440.0],
+            "volume": [1_000_000],
+        })
+
+        skipped_before = engine.trades_skipped
+        engine._execute_option_signal(signal, timestamp, day_data)
+
+        # Pre-fix would have incremented trades_skipped (TTE truncated to 0).
+        assert engine.trades_skipped == skipped_before
+        # And the position should have been opened.
+        assert symbol in engine.multi_positions
+
+    def test_seconds_based_tte_matches_expected_fraction(self):
+        """TTE for an 8-hour gap should be ~8/(365*24), not 0."""
+        expiry_date = datetime(2024, 6, 15)
+        timestamp = datetime(2024, 6, 14, 16, 0, 0)
+        tte = (expiry_date - timestamp).total_seconds() / (365.0 * 86400)
+        # 8 hours remaining
+        assert tte == pytest.approx(8.0 / (365.0 * 24.0), rel=1e-9)
+        assert tte > 0

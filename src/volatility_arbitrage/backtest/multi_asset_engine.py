@@ -18,8 +18,9 @@ import pandas as pd
 from pydantic import BaseModel, Field, ConfigDict
 
 from volatility_arbitrage.backtest.engine import BacktestEngine, BacktestResult
-from volatility_arbitrage.core.config import BacktestConfig
+from volatility_arbitrage.core.config import BacktestConfig, VolatilityArbitrageConfig
 from volatility_arbitrage.core.types import Trade, TradeType, OptionType
+from volatility_arbitrage.data.real_options_loader import get_snapshot_for_date
 from volatility_arbitrage.models.black_scholes import BlackScholesModel, Greeks
 from volatility_arbitrage.execution.costs import SquareRootImpactModel
 from volatility_arbitrage.strategy.base import Strategy, Signal
@@ -204,6 +205,7 @@ class MultiAssetBacktestEngine(BacktestEngine):
         self,
         config: BacktestConfig,
         strategy: Strategy,
+        strategy_config: Optional[VolatilityArbitrageConfig] = None,
         option_commission_per_contract: Decimal = Decimal("0.65"),
         option_slippage_pct: Decimal = Decimal("0.025"),  # 2.5% for options (realistic)
         margin_requirement_pct: Decimal = Decimal("0.25"),  # 25% margin for short options
@@ -214,15 +216,33 @@ class MultiAssetBacktestEngine(BacktestEngine):
         Args:
             config: Backtest configuration
             strategy: Trading strategy
+            strategy_config: Strategy configuration with real options data settings
             option_commission_per_contract: Commission per option contract
             option_slippage_pct: Slippage percentage for options (default 2.5%)
             margin_requirement_pct: Margin requirement for short options (default 25%)
         """
         super().__init__(config, strategy)
 
+        self.strategy_config = strategy_config or VolatilityArbitrageConfig()
         self.option_commission_per_contract = option_commission_per_contract
         self.option_slippage_pct = option_slippage_pct
         self.margin_requirement_pct = margin_requirement_pct
+
+        # Real options data tracking
+        self.trades_with_real_data = 0
+        self.trades_with_placeholder_data = 0
+        self.trades_skipped = 0
+
+        # Log data mode
+        if self.strategy_config.use_real_options_data:
+            logger.info(
+                "🟢 REAL DATA MODE: Using historical options data",
+                extra={"data_dir": self.strategy_config.options_data_dir},
+            )
+        else:
+            logger.warning(
+                "🔴 PLACEHOLDER MODE: Using hardcoded IV/TTE (NOT VALID FOR BACKTESTING)"
+            )
 
         # Square-root impact model (Phase 2)
         if config.use_impact_model:
@@ -415,15 +435,84 @@ class MultiAssetBacktestEngine(BacktestEngine):
             return
 
         underlying_price = Decimal(str(symbol_data.iloc[0]["close"]))
-
-        # For now, use a simplified pricing model
-        # In production, would use actual option chain data
-        # Estimate option price using Black-Scholes
-        time_to_expiry = Decimal("0.08")  # ~1 month placeholder
-        risk_free_rate = self.config.risk_free_rate
-        implied_vol = Decimal("0.25")  # Placeholder
-
         option_type = OptionType.CALL if option_type_str == "CALL" else OptionType.PUT
+        risk_free_rate = self.config.risk_free_rate
+
+        # Parse expiry date from symbol (format: YYYYMMDD)
+        try:
+            expiry_date = datetime.strptime(expiry_str, "%Y%m%d")
+        except ValueError:
+            logger.warning(f"Invalid expiry format in symbol: {signal.symbol}")
+            self.trades_skipped += 1
+            return
+
+        # Calculate real time to expiry (seconds-based to avoid intraday truncation)
+        time_to_expiry = Decimal(
+            str((expiry_date - timestamp).total_seconds() / (365.0 * 86400))
+        )
+
+        # Validate: option not expired
+        if time_to_expiry <= 0:
+            logger.debug(f"Option expired (TTE={time_to_expiry:.4f}): {signal.symbol}")
+            self.trades_skipped += 1
+            return
+
+        # Get real IV from historical options data
+        implied_vol = None
+        if self.strategy_config.use_real_options_data:
+            snapshot = get_snapshot_for_date(
+                timestamp.date() if isinstance(timestamp, datetime) else timestamp,
+                self.strategy_config.options_data_dir,
+            )
+
+            if snapshot:
+                # Find matching option chain by expiry
+                for chain_expiry, chain in snapshot.chains.items():
+                    chain_days = (chain_expiry - timestamp).days
+                    expiry_days = (expiry_date - timestamp).days
+                    if abs(chain_days - expiry_days) <= 3:  # Within 3 days
+                        # Find option by strike (within $0.01 tolerance)
+                        options = chain.calls if option_type == OptionType.CALL else chain.puts
+                        for opt in options:
+                            if abs(float(opt.strike) - float(strike)) < 0.01:
+                                if opt.implied_volatility and opt.implied_volatility > 0:
+                                    implied_vol = opt.implied_volatility
+                                    break
+                        if implied_vol:
+                            break
+
+                # Fallback to ATM IV if specific strike not found
+                if implied_vol is None:
+                    atm_iv = (
+                        snapshot.atm_call_iv
+                        if option_type == OptionType.CALL
+                        else snapshot.atm_put_iv
+                    )
+                    if atm_iv and atm_iv > 0:
+                        implied_vol = atm_iv
+                        logger.debug(
+                            f"Using ATM IV fallback for {signal.symbol}: {float(atm_iv):.2%}"
+                        )
+
+        # Use placeholder if real data not available
+        used_placeholder_iv = False
+        if implied_vol is None:
+            implied_vol = Decimal("0.25")
+            used_placeholder_iv = True
+            # Only warn when the user expected real data lookup; if they opted out
+            # via use_real_options_data=False, the placeholder is intentional.
+            if self.strategy_config.use_real_options_data:
+                logger.warning(
+                    f"🔴 PLACEHOLDER IV for {signal.symbol}: No real data available"
+                )
+        else:
+            # Validate IV range (1% to 200%)
+            if implied_vol < Decimal("0.01") or implied_vol > Decimal("2.0"):
+                logger.warning(
+                    f"IV out of range ({float(implied_vol):.2%}) for {signal.symbol}, skipping"
+                )
+                self.trades_skipped += 1
+                return
 
         theoretical_price = BlackScholesModel.price(
             S=underlying_price,
@@ -519,6 +608,13 @@ class MultiAssetBacktestEngine(BacktestEngine):
             commission=commission,
         )
 
+        # Count data-quality stats only for trades that actually execute
+        # (after cash / margin checks pass).
+        if used_placeholder_iv:
+            self.trades_with_placeholder_data += 1
+        else:
+            self.trades_with_real_data += 1
+
         self.trades.append(trade)
 
         # Update cash
@@ -530,7 +626,14 @@ class MultiAssetBacktestEngine(BacktestEngine):
 
         # Update multi-asset positions
         self._update_multi_position_from_trade(
-            trade, timestamp, underlying_price, strike, option_type, risk_free_rate, implied_vol
+            trade,
+            timestamp,
+            underlying_price,
+            strike,
+            option_type,
+            risk_free_rate,
+            implied_vol,
+            expiry=expiry_date,
         )
 
         # Update margin tracking for short positions
@@ -574,13 +677,17 @@ class MultiAssetBacktestEngine(BacktestEngine):
         option_type: OptionType,
         risk_free_rate: Decimal,
         implied_vol: Decimal,
+        expiry: Optional[datetime] = None,
     ) -> None:
         """Update multi-asset position tracking."""
         symbol = trade.symbol
         is_option = "_CALL_" in symbol or "_PUT_" in symbol
 
-        # Determine expiry (placeholder - should come from actual data)
-        expiry = timestamp + timedelta(days=30)
+        # Use real expiry parsed from option symbol; fall back to 30d placeholder
+        # only if caller didn't supply one (preserves prior behavior for callers
+        # that don't have real expiry data).
+        if expiry is None:
+            expiry = timestamp + timedelta(days=30)
 
         if symbol not in self.multi_positions:
             # New position
@@ -770,11 +877,21 @@ class MultiAssetBacktestEngine(BacktestEngine):
         margin_financing_cost = self.margin_used * daily_margin_rate
         self.cash -= margin_financing_cost
 
-        # 2. Daily delta hedge rebalancing cost (applied to notional exposure)
+        # 2. Daily delta hedge rebalancing cost (applied to dollar delta exposure)
+        # Per position: |per-share delta| * contracts * 100 * underlying_price
+        # Summing absolute dollar deltas reflects hedging cost when underlyings differ.
         daily_hedge_cost_rate = self.config.daily_hedge_cost if hasattr(self.config, 'daily_hedge_cost') else Decimal("0.0002")
-        portfolio_delta = self._calculate_portfolio_greeks().delta
-        # Hedge cost proportional to delta exposure (approximate notional)
-        hedge_notional = abs(portfolio_delta) * Decimal("100")  # Delta * 100 shares per contract
+        hedge_notional = Decimal("0")
+        for pos in self.multi_positions.values():
+            if not pos.is_option or pos.underlying_price is None:
+                continue
+            pos_greeks = pos.calculate_greeks()
+            if pos_greeks is None:
+                continue
+            # MultiAssetPosition.calculate_greeks already scales delta by signed
+            # quantity, so abs(delta)*100*S is the dollar delta to hedge.
+            dollar_delta = abs(pos_greeks.delta) * Decimal("100") * pos.underlying_price
+            hedge_notional += dollar_delta
         daily_hedge_cost = hedge_notional * daily_hedge_cost_rate
         self.cash -= daily_hedge_cost
 
@@ -881,10 +998,48 @@ class MultiAssetBacktestEngine(BacktestEngine):
         drawdown = (equity_curve - rolling_max) / rolling_max
         max_drawdown = drawdown.min()
 
+        # Log data usage report
+        self.log_data_usage_report()
+
         return {
             "total_return": float(total_return),
             "sharpe_ratio": float(sharpe_ratio),
             "max_drawdown": float(max_drawdown),
             "total_trades": len(self.trades),
             "equity_curve": self.history,
+            # Data quality metrics
+            "trades_with_real_data": self.trades_with_real_data,
+            "trades_with_placeholder_data": self.trades_with_placeholder_data,
+            "trades_skipped": self.trades_skipped,
+            "real_data_pct": (
+                self.trades_with_real_data
+                / max(self.trades_with_real_data + self.trades_with_placeholder_data, 1)
+                * 100
+            ),
         }
+
+    def log_data_usage_report(self) -> None:
+        """Log summary of real vs placeholder data usage."""
+        total_trades = self.trades_with_real_data + self.trades_with_placeholder_data
+        if total_trades == 0:
+            logger.info("No options trades executed")
+            return
+
+        real_pct = self.trades_with_real_data / total_trades * 100
+
+        logger.info("=" * 50)
+        logger.info("📊 OPTIONS DATA USAGE REPORT")
+        logger.info("=" * 50)
+        logger.info(f"  Trades with REAL IV data:     {self.trades_with_real_data:>6}")
+        logger.info(f"  Trades with PLACEHOLDER IV:   {self.trades_with_placeholder_data:>6}")
+        logger.info(f"  Trades skipped (invalid):     {self.trades_skipped:>6}")
+        logger.info(f"  Real data coverage:           {real_pct:>5.1f}%")
+        logger.info("=" * 50)
+
+        if real_pct < 90:
+            logger.warning(
+                f"⚠️ LOW DATA QUALITY: Only {real_pct:.1f}% of trades used real IV data. "
+                "Results may not be reliable."
+            )
+        elif real_pct >= 95:
+            logger.info("✅ HIGH DATA QUALITY: >95% trades used real IV data.")
