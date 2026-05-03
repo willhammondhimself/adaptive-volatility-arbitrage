@@ -17,6 +17,7 @@ from typing import Optional, Dict, List
 import numpy as np
 import pandas as pd
 
+from volatility_arbitrage.core.config import RegimeParameters, VolatilityArbitrageConfig
 from volatility_arbitrage.core.types import OptionChain, OptionContract, Position, OptionType
 from volatility_arbitrage.models.black_scholes import BlackScholesModel
 from volatility_arbitrage.models.volatility import GARCHVolatility, calculate_returns
@@ -82,158 +83,6 @@ class VolatilitySpread:
     def is_short_opportunity(self) -> bool:
         """True if IV > RV (sell volatility opportunity)."""
         return self.spread > 0
-
-
-@dataclass
-class RegimeParameters:
-    """
-    Regime-specific strategy parameters.
-
-    Allows different threshold and sizing rules for different market regimes.
-    """
-
-    regime_id: int
-    entry_threshold_pct: Decimal
-    exit_threshold_pct: Decimal
-    position_size_multiplier: Decimal = Decimal("1.0")
-    max_vega_multiplier: Decimal = Decimal("1.0")
-
-    def to_dict(self) -> dict:
-        """Convert to dictionary."""
-        return {
-            "regime_id": self.regime_id,
-            "entry_threshold_pct": float(self.entry_threshold_pct),
-            "exit_threshold_pct": float(self.exit_threshold_pct),
-            "position_size_multiplier": float(self.position_size_multiplier),
-            "max_vega_multiplier": float(self.max_vega_multiplier),
-        }
-
-
-@dataclass
-class VolatilityArbitrageConfig:
-    """Configuration for volatility arbitrage strategy."""
-
-    # Entry/exit thresholds (baseline, used when no regime detection)
-    entry_threshold_pct: Decimal = Decimal("5.0")  # 5% spread to enter
-    exit_threshold_pct: Decimal = Decimal("2.0")   # 2% spread to exit
-
-    # Time constraints
-    min_days_to_expiry: int = 14
-    max_days_to_expiry: int = 60
-
-    # Delta hedging
-    delta_rebalance_threshold: Decimal = Decimal("0.10")  # Rehedge at 10 delta
-    delta_target: Decimal = Decimal("0.0")  # Target delta-neutral
-
-    # Position sizing
-    position_size_pct: Decimal = Decimal("5.0")  # 5% of capital per trade
-    max_vega_exposure: Decimal = Decimal("1000")  # Max vega per position
-    max_positions: int = 5
-
-    # Volatility forecasting
-    vol_lookback_period: int = 30
-    vol_forecast_method: str = "garch"  # garch, ewma, historical
-
-    # Risk management
-    max_loss_pct: Decimal = Decimal("50.0")  # Stop loss at 50% of premium
-
-    # Partial profit taking (reduces return autocorrelation)
-    use_profit_taking: bool = True
-    profit_take_levels: list = field(
-        default_factory=lambda: [Decimal("0.25"), Decimal("0.50"), Decimal("0.75")]
-    )
-    profit_take_sizes: list = field(
-        default_factory=lambda: [Decimal("0.33"), Decimal("0.33"), Decimal("0.34")]
-    )
-
-    # Regime detection (optional)
-    use_regime_detection: bool = False
-    regime_params: Optional[dict[int, RegimeParameters]] = None  # regime_id -> parameters
-    regime_lookback_period: int = 60  # Days for regime detection
-    exit_on_regime_transition: bool = False  # Exit all positions when regime changes
-
-    # ===== QV STRATEGY CONFIGURATION =====
-    # QV Strategy Toggle
-    use_qv_strategy: bool = False  # Backward compatibility flag
-
-    # QV Feature Windows
-    rv_window: int = 20           # Realized volatility lookback
-    feature_window: int = 60      # Z-score calculation window
-    regime_window: int = 252      # Vol percentile window
-
-    # QV Signal Thresholds
-    pc_ratio_threshold: Decimal = Decimal("1.0")    # High fear threshold
-    skew_threshold: Decimal = Decimal("0.05")       # 5% skew threshold
-    premium_threshold: Decimal = Decimal("0.10")    # 10% IV premium threshold
-    term_structure_threshold: Decimal = Decimal("0.0")  # Positive slope threshold
-    volume_spike_threshold: Decimal = Decimal("1.5")    # 1.5x median volume
-    sentiment_threshold: Decimal = Decimal("-0.05")     # Negative sentiment threshold
-
-    # QV Consensus Scoring
-    consensus_threshold: Decimal = Decimal("0.2")   # Minimum consensus for entry
-
-    # QV Signal Weights (must sum to 1.0)
-    weight_pc_ratio: Decimal = Decimal("0.20")
-    weight_iv_skew: Decimal = Decimal("0.20")
-    weight_iv_premium: Decimal = Decimal("0.15")
-    weight_term_structure: Decimal = Decimal("0.15")
-    weight_volume_spike: Decimal = Decimal("0.15")
-    weight_near_term_sentiment: Decimal = Decimal("0.15")
-
-    # QV Regime Scalars
-    regime_crisis_scalar: Decimal = Decimal("0.5")    # Vol >90th percentile
-    regime_elevated_scalar: Decimal = Decimal("0.75") # Vol 70-90th percentile
-    regime_normal_scalar: Decimal = Decimal("1.0")    # Vol 30-70th percentile
-    regime_low_scalar: Decimal = Decimal("1.2")       # Vol 10-30th percentile
-    regime_extreme_low_scalar: Decimal = Decimal("1.5") # Vol <10th percentile
-
-    # Bullish Base Exposure Parameters
-    base_long_bias: Decimal = Decimal("0.8")              # Minimum long exposure (0.8 = 80%)
-    signal_adjustment_factor: Decimal = Decimal("0.7")    # Signal scaling factor
-
-    # ===== TIERED POSITION SIZING =====
-    use_tiered_sizing: bool = True  # Enable continuous position scaling
-    min_consensus_threshold: Decimal = Decimal("0.15")  # Below this = no trade (lower for synthetic data)
-    position_scaling_method: str = "quadratic"  # linear, quadratic, cubic
-    min_holding_days: int = 5  # Minimum days before exit allowed
-
-    # ===== PHASE 2: LEVERAGE =====
-    use_leverage: bool = False
-    short_vol_leverage: Decimal = Decimal("1.3")
-    long_vol_leverage: Decimal = Decimal("2.0")
-    max_leveraged_notional_pct: Decimal = Decimal("0.80")
-    leverage_drawdown_reduction: bool = True
-    leverage_dd_threshold: Decimal = Decimal("0.10")
-
-    # ===== PHASE 2: BAYESIAN LSTM VOLATILITY FORECASTING =====
-    bayesian_lstm_hidden_size: int = 64
-    bayesian_lstm_dropout_p: float = 0.2
-    bayesian_lstm_sequence_length: int = 20
-    bayesian_lstm_n_mc_samples: int = 50
-
-    # ===== PHASE 2: UNCERTAINTY-ADJUSTED POSITION SIZING =====
-    use_uncertainty_sizing: bool = False
-    uncertainty_penalty: float = 2.0
-    uncertainty_min_position_pct: float = 0.01
-    uncertainty_max_position_pct: float = 0.15
-
-    def to_dict(self) -> dict:
-        """Convert to dictionary."""
-        base = {
-            "entry_threshold_pct": float(self.entry_threshold_pct),
-            "exit_threshold_pct": float(self.exit_threshold_pct),
-            "min_days_to_expiry": self.min_days_to_expiry,
-            "max_days_to_expiry": self.max_days_to_expiry,
-            "delta_rebalance_threshold": float(self.delta_rebalance_threshold),
-            "position_size_pct": float(self.position_size_pct),
-            "max_vega_exposure": float(self.max_vega_exposure),
-            "use_regime_detection": self.use_regime_detection,
-        }
-
-        if self.regime_params:
-            base["regime_params"] = {k: v.to_dict() for k, v in self.regime_params.items()}
-
-        return base
 
 
 class VolatilityArbitrageStrategy(Strategy):
@@ -309,6 +158,10 @@ class VolatilityArbitrageStrategy(Strategy):
         # Entry tracking for tiered sizing and holding period
         self.entry_timestamps: Dict[str, datetime] = {}  # symbol -> entry time
         self.entry_consensus: Dict[str, Decimal] = {}    # symbol -> consensus at entry
+
+        # Signal smoothing: incremental EMA state per symbol
+        self.ema_state: Dict[str, float] = {}  # symbol -> running EMA of consensus
+        self.ema_counts: Dict[str, int] = {}   # symbol -> number of observations seen
 
         # Validate regime configuration
         if config.use_regime_detection:
@@ -737,6 +590,10 @@ class VolatilityArbitrageStrategy(Strategy):
             ))
 
         # Track position entry
+        # entry_quantity is per-leg (straddle: each of call/put leg has `quantity`
+        # contracts). _check_profit_taking iterates per-leg and uses entry_quantity
+        # as the base for tier-sizing, so storing per-leg avoids the compounding
+        # bug where take_size * abs(pos.quantity) shrinks each tier.
         self.option_positions[vol_spread.symbol] = {
             "entry_timestamp": vol_spread.timestamp,
             "entry_iv": vol_spread.implied_vol,
@@ -744,6 +601,8 @@ class VolatilityArbitrageStrategy(Strategy):
             "direction": action,
             "strike": atm_strike,
             "expiry": option_chain.expiry,
+            "profit_levels_taken": [],  # Track which profit take levels have been executed
+            "entry_quantity": int(quantity),
         }
 
         logger.info(
@@ -780,7 +639,15 @@ class VolatilityArbitrageStrategy(Strategy):
         """
         signals: list[Signal] = []
 
-        # Check minimum holding period (tiered sizing feature)
+        # Stop-loss is a hard risk constraint and runs unconditionally,
+        # ahead of the holding-period gate. Otherwise a QV position can
+        # blow through max_loss_pct during the first min_holding_days.
+        if vol_spread.symbol in self.option_positions:
+            stop_loss_signals = self._check_stop_loss(vol_spread.symbol, positions)
+            if stop_loss_signals:
+                return stop_loss_signals
+
+        # Holding-period gate applies only to discretionary exits below.
         if not self._check_holding_period(vol_spread.symbol, vol_spread.timestamp):
             return []  # Cannot exit yet - must hold for min_holding_days
 
@@ -807,7 +674,11 @@ class VolatilityArbitrageStrategy(Strategy):
             signals.extend(self._generate_close_signals(vol_spread.symbol, positions, "Spread reversed"))
             return signals
 
-        # TODO: Check stop loss based on P&L
+        # Check profit taking
+        if self.config.use_profit_taking:
+            profit_signals = self._check_profit_taking(vol_spread.symbol, positions)
+            if profit_signals:
+                signals.extend(profit_signals)
 
         return signals
 
@@ -818,7 +689,10 @@ class VolatilityArbitrageStrategy(Strategy):
         positions: dict[str, Position],
     ) -> list[Signal]:
         """
-        Check if delta rebalancing is needed.
+        Check if delta rebalancing is needed and generate hedge signals.
+
+        Calculates portfolio delta from option positions using Black-Scholes
+        and generates hedge signals when |delta| exceeds threshold.
 
         Args:
             symbol: Underlying symbol
@@ -834,8 +708,111 @@ class VolatilityArbitrageStrategy(Strategy):
         if symbol not in self.option_positions:
             return signals
 
-        # Calculate current portfolio delta
-        # TODO: Implement portfolio delta calculation from positions
+        position_info = self.option_positions[symbol]
+        strike = position_info.get("strike")
+        expiry = position_info.get("expiry")
+
+        if strike is None or expiry is None:
+            return signals
+
+        # Calculate time to expiry
+        time_to_expiry = (expiry - option_chain.timestamp).total_seconds() / (365.25 * 24 * 3600)
+        if time_to_expiry <= 0:
+            return signals
+
+        # Get current underlying price and IV
+        spot = option_chain.underlying_price
+        r = option_chain.risk_free_rate
+
+        # Find ATM options for IV
+        atm_call = min(option_chain.calls, key=lambda c: abs(c.strike - spot), default=None)
+        atm_put = min(option_chain.puts, key=lambda p: abs(p.strike - spot), default=None)
+
+        call_iv = atm_call.implied_volatility if (atm_call and atm_call.implied_volatility) else None
+        put_iv = atm_put.implied_volatility if (atm_put and atm_put.implied_volatility) else None
+
+        if call_iv is None and put_iv is None:
+            return signals
+
+        # Fall back across sides when only one is available.
+        call_sigma = call_iv if call_iv is not None else put_iv
+        put_sigma = put_iv if put_iv is not None else call_iv
+
+        # Each option contract represents 100 shares of the underlying.
+        SHARE_MULTIPLIER = Decimal("100")
+
+        # Calculate portfolio delta in *shares* of the underlying.
+        portfolio_delta = Decimal("0")
+        T = Decimal(str(time_to_expiry))
+
+        for pos_symbol, pos in positions.items():
+            if symbol not in pos_symbol:
+                continue
+
+            upper = pos_symbol.upper()
+
+            # Parse strike from per-leg symbol if present
+            # (format: SYMBOL_TYPE_STRIKE_EXPIRY, e.g. SPY_CALL_440_20240615).
+            leg_strike = strike
+            parts = pos_symbol.split("_")
+            if len(parts) > 2:
+                try:
+                    leg_strike = Decimal(parts[2])
+                except (ValueError, ArithmeticError):
+                    leg_strike = strike
+
+            # Determine if this is a call, put, or stock position
+            if "_C_" in upper or "CALL" in upper:
+                greeks = BlackScholesModel.greeks(
+                    S=spot,
+                    K=leg_strike,
+                    T=T,
+                    r=r,
+                    sigma=call_sigma,
+                    option_type=OptionType.CALL,
+                )
+                # delta is per-share; quantity is contracts → ×100 shares.
+                portfolio_delta += greeks.delta * Decimal(pos.quantity) * SHARE_MULTIPLIER
+
+            elif "_P_" in upper or "PUT" in upper:
+                greeks = BlackScholesModel.greeks(
+                    S=spot,
+                    K=leg_strike,
+                    T=T,
+                    r=r,
+                    sigma=put_sigma,
+                    option_type=OptionType.PUT,
+                )
+                portfolio_delta += greeks.delta * Decimal(pos.quantity) * SHARE_MULTIPLIER
+
+            elif pos_symbol == symbol:
+                # Stock/underlying position (delta = 1 per share)
+                portfolio_delta += Decimal(pos.quantity)
+
+        # Check if rebalancing is needed
+        threshold = self.config.delta_rebalance_threshold
+        target_delta = self.config.delta_target
+
+        delta_deviation = abs(portfolio_delta - target_delta)
+
+        if delta_deviation > threshold:
+            # Calculate shares needed to neutralize delta
+            shares_to_hedge = int(portfolio_delta - target_delta)
+
+            if shares_to_hedge != 0:
+                action = "sell" if shares_to_hedge > 0 else "buy"
+                signals.append(Signal(
+                    symbol=symbol,
+                    action=action,
+                    quantity=abs(shares_to_hedge),
+                    reason=f"Delta rebalance: portfolio delta={float(portfolio_delta):.2f}, target={float(target_delta):.2f}"
+                ))
+
+                logger.info(
+                    f"Delta rebalancing for {symbol}: delta={float(portfolio_delta):.2f}, "
+                    f"hedge={shares_to_hedge} shares",
+                    extra={"symbol": symbol, "portfolio_delta": float(portfolio_delta)}
+                )
 
         return signals
 
@@ -882,6 +859,141 @@ class VolatilityArbitrageStrategy(Strategy):
             f"Closing volatility arbitrage position for {symbol}",
             extra={"symbol": symbol, "reason": reason}
         )
+
+        return signals
+
+    def _check_stop_loss(
+        self,
+        symbol: str,
+        positions: dict[str, Position],
+    ) -> list[Signal]:
+        """
+        Check if position should be stopped out based on P&L.
+
+        Triggers full exit when combined position loss exceeds max_loss_pct.
+
+        Args:
+            symbol: Underlying symbol
+            positions: Current positions
+
+        Returns:
+            List of close signals if stop loss triggered, empty list otherwise
+        """
+        # Calculate total unrealized P&L for all positions related to this symbol
+        total_pnl = Decimal("0")
+        total_cost_basis = Decimal("0")
+
+        # Match only option legs (SYMBOL_TYPE_STRIKE_EXPIRY) — exclude the
+        # bare-symbol underlying hedge stock so its unit-mismatched cost basis
+        # does not distort the option-strategy P&L threshold.
+        for pos_symbol, pos in positions.items():
+            if pos_symbol.startswith(symbol + "_"):
+                total_pnl += pos.unrealized_pnl
+                total_cost_basis += pos.cost_basis
+
+        if total_cost_basis == 0:
+            return []
+
+        pnl_pct = (total_pnl / total_cost_basis) * Decimal("100")
+
+        # Check against stop loss threshold (max_loss_pct is positive, e.g., 50 for 50%)
+        if pnl_pct <= -self.config.max_loss_pct:
+            logger.warning(
+                f"Stop loss triggered for {symbol}: P&L {float(pnl_pct):.1f}%",
+                extra={"symbol": symbol, "pnl_pct": float(pnl_pct)}
+            )
+            return self._generate_close_signals(symbol, positions, f"Stop loss at {float(pnl_pct):.1f}%")
+
+        return []
+
+    def _check_profit_taking(
+        self,
+        symbol: str,
+        positions: dict[str, Position],
+    ) -> list[Signal]:
+        """
+        Check for tiered profit taking opportunities.
+
+        Closes partial positions at configured profit levels:
+        - 25% profit: close 33% of position
+        - 50% profit: close 33% of position
+        - 75% profit: close remaining 34%
+
+        Args:
+            symbol: Underlying symbol
+            positions: Current positions
+
+        Returns:
+            List of partial close signals
+        """
+        signals: list[Signal] = []
+
+        if symbol not in self.option_positions:
+            return signals
+
+        position_info = self.option_positions[symbol]
+        levels_taken = position_info.get("profit_levels_taken", [])
+
+        # Calculate total unrealized P&L percentage
+        total_pnl = Decimal("0")
+        total_cost_basis = Decimal("0")
+
+        # Match only option legs (SYMBOL_TYPE_STRIKE_EXPIRY) — exclude the
+        # bare-symbol underlying hedge stock so its unit-mismatched cost basis
+        # does not distort the option-strategy P&L threshold.
+        for pos_symbol, pos in positions.items():
+            if pos_symbol.startswith(symbol + "_"):
+                total_pnl += pos.unrealized_pnl
+                total_cost_basis += pos.cost_basis
+
+        if total_cost_basis == 0:
+            return signals
+
+        pnl_pct = total_pnl / total_cost_basis  # As decimal (0.25 = 25%)
+
+        # Check each profit level
+        for i, level in enumerate(self.config.profit_take_levels):
+            if i in levels_taken:
+                continue  # Already taken this level
+
+            if pnl_pct >= level:
+                # Take profit at this level
+                take_size = self.config.profit_take_sizes[i]
+                # Size each tier off the *original* entry quantity, not the
+                # surviving quantity. Otherwise tiered sizes (e.g. 0.33/0.33/0.34)
+                # compound and never fully close the position. Fall back to live
+                # quantity for legacy entries that pre-date entry_quantity.
+                entry_qty = position_info.get("entry_quantity")
+
+                # Only emit close signals against option legs; never partially
+                # unwind the bare-symbol underlying delta hedge here.
+                for pos_symbol, pos in positions.items():
+                    if pos_symbol.startswith(symbol + "_"):
+                        base_qty = entry_qty if entry_qty is not None else abs(pos.quantity)
+                        close_qty = min(
+                            int(base_qty * float(take_size)),
+                            abs(pos.quantity),
+                        )
+                        if close_qty > 0:
+                            action = "sell" if pos.quantity > 0 else "buy"
+                            signals.append(Signal(
+                                symbol=pos_symbol,
+                                action=action,
+                                quantity=close_qty,
+                                reason=f"Profit take at {float(level)*100:.0f}% (close {float(take_size)*100:.0f}%)"
+                            ))
+
+                # Mark level as taken
+                levels_taken.append(i)
+                self.option_positions[symbol]["profit_levels_taken"] = levels_taken
+
+                logger.info(
+                    f"Profit taking for {symbol} at {float(level)*100:.0f}% level",
+                    extra={"symbol": symbol, "pnl_pct": float(pnl_pct * 100), "level": float(level)}
+                )
+
+                # Only take one level per check
+                break
 
         return signals
 
@@ -1404,6 +1516,41 @@ class VolatilityArbitrageStrategy(Strategy):
 
         return days_held >= self.config.min_holding_days
 
+    def _smooth_consensus(self, symbol: str, raw_consensus: Decimal) -> Decimal:
+        """
+        Apply EMA smoothing to consensus score to reduce whipsaw trades.
+
+        Uses a 3-day EMA by default to smooth out daily noise while
+        remaining responsive to genuine trend changes.
+
+        Args:
+            symbol: Asset symbol
+            raw_consensus: Raw consensus score from signals
+
+        Returns:
+            Smoothed consensus score
+        """
+        if not self.config.use_signal_smoothing:
+            return raw_consensus
+
+        raw = float(raw_consensus)
+        count = self.ema_counts.get(symbol, 0) + 1
+        self.ema_counts[symbol] = count
+
+        prev = self.ema_state.get(symbol)
+        if prev is None:
+            ema = raw
+        else:
+            alpha = 2.0 / (self.config.signal_smoothing_window + 1)
+            ema = alpha * raw + (1 - alpha) * prev
+        self.ema_state[symbol] = ema
+
+        # Warm-up: return raw until enough observations have been seen
+        if count < self.config.signal_smoothing_min_history:
+            return raw_consensus
+
+        return Decimal(str(ema))
+
     def _get_leverage_multiplier(self, signal_direction: str) -> Decimal:
         """
         Get leverage multiplier based on signal direction.
@@ -1763,7 +1910,10 @@ class VolatilityArbitrageStrategy(Strategy):
         binary_signals = self._generate_binary_signals(symbol, features)
 
         # Step 6: Calculate consensus
-        consensus = self._calculate_consensus_score(binary_signals)
+        raw_consensus = self._calculate_consensus_score(binary_signals)
+
+        # Step 6b: Apply signal smoothing (3-day EMA to reduce whipsaw)
+        consensus = self._smooth_consensus(symbol, raw_consensus)
 
         # Step 7: Apply TIERED SIZING - calculate position multiplier
         if self.config.use_tiered_sizing:
@@ -1804,6 +1954,40 @@ class VolatilityArbitrageStrategy(Strategy):
         if entry_signals:
             self.entry_timestamps[symbol] = timestamp
             self.entry_consensus[symbol] = consensus
+
+            # Populate option_positions so risk-management hooks
+            # (_check_stop_loss, _check_profit_taking, _check_delta_rebalancing,
+            # _check_exit_signals) can see the QV position. Without this they all
+            # early-return on `symbol not in self.option_positions`.
+            #
+            # Strike is the ATM strike used by both _create_long_delta_signals and
+            # _create_short_delta_signals (nearest strike to underlying_price).
+            # Both sides ("Sell ATM Put" for bullish, "Sell ATM Call" for bearish)
+            # are short-vol sells, so direction is always "sell".
+            atm_strike = option_chain.underlying_price
+            if consensus > Decimal("0"):
+                ref_option = min(
+                    option_chain.puts,
+                    key=lambda p: abs(p.strike - atm_strike),
+                    default=None,
+                )
+            else:
+                ref_option = min(
+                    option_chain.calls,
+                    key=lambda c: abs(c.strike - atm_strike),
+                    default=None,
+                )
+            tracked_strike = ref_option.strike if ref_option is not None else atm_strike
+            entry_quantity = sum(s.quantity for s in entry_signals)
+
+            self.option_positions[symbol] = {
+                "entry_timestamp": timestamp,
+                "direction": "sell",
+                "strike": tracked_strike,
+                "expiry": option_chain.expiry,
+                "profit_levels_taken": [],
+                "entry_quantity": int(entry_quantity),
+            }
 
             logger.info(
                 f"QV Entry: {symbol} | consensus={consensus:.3f} | "
