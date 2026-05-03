@@ -5,7 +5,7 @@
 [![Python](https://img.shields.io/badge/Python-3.12+-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.108+-green.svg)](https://fastapi.tiangolo.com/)
 [![React](https://img.shields.io/badge/React-18.2+-61DAFB.svg)](https://reactjs.org/)
-[![Tests](https://img.shields.io/badge/Tests-71%20passing-success.svg)]()
+[![Tests](https://img.shields.io/badge/Tests-274%20passing-success.svg)]()
 
 ---
 
@@ -80,14 +80,29 @@ call = heston.price(S=100, K=110, T=1.0, option_type="call")
 
 ### Dashboard
 
-FastAPI backend + React 18 + Plotly.js frontend. Real-time parameter exploration with LRU caching (80% hit rate, <5ms cache hits).
+FastAPI backend + React 18 + Plotly.js frontend with dark mode. Real-time parameter exploration with LRU caching (80% hit rate, <5ms cache hits).
 
-**API**:
-```
-POST   /api/v1/heston/price-surface
-GET    /api/v1/heston/cache/stats
-DELETE /api/v1/heston/cache
-```
+**Pages**:
+| Route | Page |
+|-------|------|
+| `/` | Surface Explorer (3D vol surface, parameter sliders) |
+| `/options` | Heston Explorer (price surface + live IV solver) |
+| `/options/bs` | Black-Scholes Playground (Greeks visualization, P&L heatmaps) |
+| `/trading` | Backtest Dashboard (equity / drawdown, Greeks evolution, trade log) |
+| `/trading/paper` | Paper Trading (mock-gateway order entry + position tracking) |
+| `/delta-hedged` | Delta-Hedged Backtest (event-driven replay with portfolio Greeks) |
+
+**API** (24+ endpoints across 8 routers — full schema at `/docs`):
+| Router | Purpose |
+|--------|---------|
+| `heston` | Price surface, cache stats, IV solve |
+| `options` | Black-Scholes pricing, P&L heatmaps, IV surfaces |
+| `backtest` | Run backtest, Monte Carlo, delta-hedged variant |
+| `market` | Live quote, option chain, VIX, market status |
+| `paper_trading` | Start/stop session, trade list, P&L stats |
+| `snapshots` | Capture / list / fetch market snapshots |
+| `forecast` | GARCH + Bayesian-LSTM volatility forecasts |
+| `costs` | Slippage and commission estimation |
 
 ### Backtester
 
@@ -105,15 +120,14 @@ engine.execute_trade(symbol="SPY", asset_type="option", quantity=10, price=12.50
 greeks = engine.portfolio_greeks(spot=450, vol=0.20, r=0.05, q=0.02)
 ```
 
-### Strategy Framework
+### Strategy
 
-Base class at [src/volatility_arbitrage/strategy/base.py](src/volatility_arbitrage/strategy/base.py).
+`VolatilityArbitrageStrategy` ([src/volatility_arbitrage/strategy/volatility_arbitrage.py](src/volatility_arbitrage/strategy/volatility_arbitrage.py)) supports two modes selected via `use_qv_strategy`:
 
-**Included strategies**:
-- Volatility mean reversion (z-score extremes)
-- Realized vs implied (classic vol arb)
-- Term structure arbitrage
-- Delta-neutral vol trading (gamma scalping)
+- **Classic IV-vs-RV** — forecasts realized vol with GARCH(1,1) or a Bayesian LSTM, sells straddles when implied exceeds the forecast by a regime-aware threshold, holds delta-neutral via daily rebalancing, exits on convergence or stop-loss.
+- **QV 6-signal consensus** — weighted score over IV skew, put/call ratio, IV-premium percentile, term-structure slope, volume ratio, and near-term sentiment. Trades on z-score extremes of the smoothed (EMA) consensus.
+
+Risk controls (apply to both modes): tiered profit-taking (25/50/75% of P&L → 33/33/34% close), stop-loss on option-leg P&L only, delta rebalancing with 100x option multiplier and per-leg strike lookup, holding-period gate for discretionary exits (stop-loss bypasses), regime-adaptive sizing (HMM-classified vol regime), uncertainty-scaled sizing from Bayesian-LSTM epistemic variance.
 
 ---
 
@@ -128,7 +142,7 @@ src/volatility_arbitrage/
   ├── models/            Heston, Black-Scholes
   └── core/              Types, config
 research/lib/            Pricing implementations (heston_fft.py)
-tests/                   71 tests
+tests/                   274 tests across 10 subdirectories
 config/                  YAML configurations
 ```
 
@@ -164,25 +178,24 @@ cd frontend && npm install
 PYTHONPATH=./src:. python3 -m pytest tests/ -v
 ```
 
-71 tests: multi-asset engine (14), core types (24), Black-Scholes (16), Heston (17).
+274 tests across pricing models (Heston, Black-Scholes, Bayesian LSTM), the multi-asset backtest engine, strategy logic (entries, exits, profit-taking, delta rebalancing, EMA smoothing), the real options data loader cache, and execution / risk modules.
 
 ---
 
 ## Up-Next
 
 **Pricing model**:
-- Market impact modeled linearly (no square-root impact)
-- No discrete dividend handling (assumes continuous yield)
-- Heston calibration assumes stationary vol-of-vol
+- Discrete dividend handling (currently assumes continuous yield)
+- American-option early-exercise premium
 
 **Backtester**:
-- Fill simulation assumes immediate execution at mid
-- No bid-ask spread modeling for options
-- Greeks computed at trade time, not continuously
+- Bid-ask spread modeling for options (currently fills at mid)
+- Square-root market impact for size-aware fills
+- Continuous Greeks tracking between trades (currently at trade time + daily MTM)
 
 **Data**:
-- Historical IV from EOD snapshots, not tick-level
-- No handling for option early exercise (American vs European)
+- Extend SPY options coverage to 2022-2023 and to additional underlyings
+- Tick-level IV reconstruction (currently EOD snapshots)
 
 ## Data
 

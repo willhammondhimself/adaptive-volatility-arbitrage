@@ -25,52 +25,26 @@ This will install:
 npm run dev
 ```
 
-The dashboard will be available at [http://localhost:3000](http://localhost:3000)
+The dashboard will be available at [http://localhost:5173](http://localhost:5173)
 
 **Note**: Make sure the backend is running on port 8000:
 ```bash
-# In the project root:
-cd /Users/willhammond/Adaptive\ Volatility\ Arbitrage\ Backtesting\ Engine
-PYTHONPATH=. python3 backend/main.py
+# From the repo root:
+PYTHONPATH=./src:. python3 backend/main.py
 ```
 
-## Features
+## Pages
 
-### Heston Explorer (Current)
+| Route | Page | What it does |
+|-------|------|--------------|
+| `/` | Surface Explorer | 3D vol surface with parameter sliders, debounced API calls |
+| `/options` | Heston Explorer | Heston price surface (heatmap + 3D), live IV solver via Brent's method |
+| `/options/bs` | Black-Scholes Playground | Greeks visualization, P&L heatmaps |
+| `/trading` | Backtest Dashboard | Two-panel equity / drawdown chart, Greeks evolution, trade log, parameter sweeps |
+| `/trading/paper` | Paper Trading | Mock-gateway order entry + position tracking |
+| `/delta-hedged` | Delta-Hedged Backtest | Event-driven replay with portfolio Greeks |
 
-- **Interactive Parameter Controls**: Adjust Heston model parameters with real-time updates
-  - Initial variance (v₀)
-  - Long-run variance (θ)
-  - Mean reversion speed (κ)
-  - Vol of vol (σᵥ)
-  - Correlation (ρ)
-  - Risk-free rate (r)
-  - Spot price (S)
-
-- **2D Heatmap**: Color-coded option prices across strikes and maturities
-  - Pan and zoom
-  - Hover for exact values
-  - Export to PNG (1920x1080)
-
-- **3D Surface**: Rotatable 3D visualization
-  - Interactive camera controls
-  - Contour projections
-  - Export to PNG
-
-- **Performance Metrics**:
-  - Computation time display
-  - Cache hit/miss indicator
-  - Real-time updates with 500ms debouncing
-
-### Coming Soon
-
-- Backtest Dashboard
-  - Equity curve with drawdown
-  - Greeks evolution
-  - Trade history
-  - Performance metrics
-- Drag-and-drop layout customization
-- Dark mode
+System-wide: dark / light mode toggle (persisted to localStorage), Plotly 3D rotation/zoom, snapshot save/load, 500ms debounce on parameter changes.
 
 ## Project Structure
 

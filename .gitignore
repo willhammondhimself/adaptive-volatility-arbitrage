@@ -179,3 +179,8 @@ __pycache__/
 # SPY Options data (too large for git)
 src/volatility_arbitrage/data/SPY_Options_2019_24/
 **/SPY_Options_*/
+
+# Personal scratch + recruiter-bullets file
+/test.py
+/data/conversion_quality_report.txt
+/RESUME_BULLETS.md
