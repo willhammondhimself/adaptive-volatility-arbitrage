@@ -1,5 +1,5 @@
-import React, { createContext, useContext, useState, useMemo, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Link, useLocation } from 'react-router-dom';
+import React, { createContext, useContext, useState, useMemo } from 'react';
+import { BrowserRouter, Routes, Route, Link, Navigate, useLocation } from 'react-router-dom';
 import {
   ThemeProvider,
   createTheme,
@@ -10,21 +10,21 @@ import {
   Button,
   Box,
   IconButton,
+  ToggleButton,
+  ToggleButtonGroup,
 } from '@mui/material';
+import LayersIcon from '@mui/icons-material/Layers';
 import ShowChartIcon from '@mui/icons-material/ShowChart';
 import TimelineIcon from '@mui/icons-material/Timeline';
-import TrendingUpIcon from '@mui/icons-material/TrendingUp';
 import AccountBalanceIcon from '@mui/icons-material/AccountBalance';
 import Brightness4Icon from '@mui/icons-material/Brightness4';
 import Brightness7Icon from '@mui/icons-material/Brightness7';
-import FunctionsIcon from '@mui/icons-material/Functions';
-import LayersIcon from '@mui/icons-material/Layers';
+import SurfaceExplorer from './pages/SurfaceExplorer';
 import HestonExplorer from './pages/HestonExplorer';
+import BlackScholesPlayground from './pages/BlackScholesPlayground';
 import BacktestDashboard from './pages/BacktestDashboard';
 import PaperTrading from './pages/PaperTrading';
 import DeltaHedgedBacktest from './pages/DeltaHedgedBacktest';
-import BlackScholesPlayground from './pages/BlackScholesPlayground';
-import SurfaceExplorer from './pages/SurfaceExplorer';
 
 // Theme mode context
 const ThemeModeContext = createContext({
@@ -76,46 +76,114 @@ function Navigation() {
   const location = useLocation();
   const { mode, toggleMode } = useThemeMode();
 
+  const isOptionsExplorer = location.pathname === '/options' || location.pathname === '/options/bs';
+  const isTrading = location.pathname === '/trading' || location.pathname === '/trading/paper';
+
   return (
     <AppBar position="static" elevation={1}>
       <Toolbar>
         <Typography variant="h6" sx={{ flexGrow: 0, mr: 4 }}>
           Volatility Arbitrage
         </Typography>
-        <Box sx={{ display: 'flex', gap: 1, flexGrow: 1 }}>
+        <Box sx={{ display: 'flex', gap: 1, flexGrow: 1, alignItems: 'center' }}>
+          {/* Surface Explorer - First */}
           <Button
             component={Link}
             to="/"
             color="inherit"
-            startIcon={<ShowChartIcon />}
+            startIcon={<LayersIcon />}
             sx={{
               backgroundColor: location.pathname === '/' ? 'rgba(255,255,255,0.15)' : 'transparent',
             }}
           >
-            Heston Explorer
+            Surface Explorer
           </Button>
-          <Button
-            component={Link}
-            to="/backtest"
-            color="inherit"
-            startIcon={<TimelineIcon />}
-            sx={{
-              backgroundColor: location.pathname === '/backtest' ? 'rgba(255,255,255,0.15)' : 'transparent',
-            }}
-          >
-            Backtest Dashboard
-          </Button>
-          <Button
-            component={Link}
-            to="/paper-trading"
-            color="inherit"
-            startIcon={<TrendingUpIcon />}
-            sx={{
-              backgroundColor: location.pathname === '/paper-trading' ? 'rgba(255,255,255,0.15)' : 'transparent',
-            }}
-          >
-            Paper Trading
-          </Button>
+
+          {/* Options Explorer with Heston/BS toggle */}
+          <Box sx={{ display: 'flex', alignItems: 'center' }}>
+            <Button
+              component={Link}
+              to="/options"
+              color="inherit"
+              startIcon={<ShowChartIcon />}
+              sx={{
+                backgroundColor: isOptionsExplorer ? 'rgba(255,255,255,0.15)' : 'transparent',
+                borderTopRightRadius: 0,
+                borderBottomRightRadius: 0,
+              }}
+            >
+              Options Explorer
+            </Button>
+            {isOptionsExplorer && (
+              <ToggleButtonGroup
+                size="small"
+                value={location.pathname === '/options/bs' ? 'bs' : 'heston'}
+                exclusive
+                sx={{ ml: 0.5 }}
+              >
+                <ToggleButton
+                  component={Link}
+                  to="/options"
+                  value="heston"
+                  sx={{ color: 'inherit', borderColor: 'rgba(255,255,255,0.3)', py: 0.5, px: 1 }}
+                >
+                  Heston
+                </ToggleButton>
+                <ToggleButton
+                  component={Link}
+                  to="/options/bs"
+                  value="bs"
+                  sx={{ color: 'inherit', borderColor: 'rgba(255,255,255,0.3)', py: 0.5, px: 1 }}
+                >
+                  BS
+                </ToggleButton>
+              </ToggleButtonGroup>
+            )}
+          </Box>
+
+          {/* Trading with Backtest/Paper toggle */}
+          <Box sx={{ display: 'flex', alignItems: 'center' }}>
+            <Button
+              component={Link}
+              to="/trading"
+              color="inherit"
+              startIcon={<TimelineIcon />}
+              sx={{
+                backgroundColor: isTrading ? 'rgba(255,255,255,0.15)' : 'transparent',
+                borderTopRightRadius: 0,
+                borderBottomRightRadius: 0,
+              }}
+            >
+              Trading
+            </Button>
+            {isTrading && (
+              <ToggleButtonGroup
+                size="small"
+                value={location.pathname === '/trading/paper' ? 'paper' : 'backtest'}
+                exclusive
+                sx={{ ml: 0.5 }}
+              >
+                <ToggleButton
+                  component={Link}
+                  to="/trading"
+                  value="backtest"
+                  sx={{ color: 'inherit', borderColor: 'rgba(255,255,255,0.3)', py: 0.5, px: 1 }}
+                >
+                  Backtest
+                </ToggleButton>
+                <ToggleButton
+                  component={Link}
+                  to="/trading/paper"
+                  value="paper"
+                  sx={{ color: 'inherit', borderColor: 'rgba(255,255,255,0.3)', py: 0.5, px: 1 }}
+                >
+                  Paper
+                </ToggleButton>
+              </ToggleButtonGroup>
+            )}
+          </Box>
+
+          {/* Delta Hedged */}
           <Button
             component={Link}
             to="/delta-hedged"
@@ -126,28 +194,6 @@ function Navigation() {
             }}
           >
             Delta Hedged
-          </Button>
-          <Button
-            component={Link}
-            to="/bs-playground"
-            color="inherit"
-            startIcon={<FunctionsIcon />}
-            sx={{
-              backgroundColor: location.pathname === '/bs-playground' ? 'rgba(255,255,255,0.15)' : 'transparent',
-            }}
-          >
-            BS Playground
-          </Button>
-          <Button
-            component={Link}
-            to="/surface-explorer"
-            color="inherit"
-            startIcon={<LayersIcon />}
-            sx={{
-              backgroundColor: location.pathname === '/surface-explorer' ? 'rgba(255,255,255,0.15)' : 'transparent',
-            }}
-          >
-            Surface Explorer
           </Button>
         </Box>
         <IconButton onClick={toggleMode} color="inherit" title={`Switch to ${mode === 'dark' ? 'light' : 'dark'} mode`}>
@@ -180,12 +226,17 @@ function App() {
         <BrowserRouter>
           <Navigation />
           <Routes>
-            <Route path="/" element={<HestonExplorer />} />
-            <Route path="/backtest" element={<BacktestDashboard />} />
-            <Route path="/paper-trading" element={<PaperTrading />} />
+            <Route path="/" element={<SurfaceExplorer />} />
+            <Route path="/options" element={<HestonExplorer />} />
+            <Route path="/options/bs" element={<BlackScholesPlayground />} />
+            <Route path="/trading" element={<BacktestDashboard />} />
+            <Route path="/trading/paper" element={<PaperTrading />} />
             <Route path="/delta-hedged" element={<DeltaHedgedBacktest />} />
-            <Route path="/bs-playground" element={<BlackScholesPlayground />} />
-            <Route path="/surface-explorer" element={<SurfaceExplorer />} />
+            <Route path="/backtest" element={<Navigate to="/trading" replace />} />
+            <Route path="/paper-trading" element={<Navigate to="/trading/paper" replace />} />
+            <Route path="/bs-playground" element={<Navigate to="/options/bs" replace />} />
+            <Route path="/surface-explorer" element={<Navigate to="/" replace />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </BrowserRouter>
       </ThemeProvider>
