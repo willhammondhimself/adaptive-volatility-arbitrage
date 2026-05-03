@@ -4,7 +4,7 @@ Configuration management for the backtesting engine.
 Loads and validates configuration from YAML files using Pydantic.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
@@ -53,6 +53,15 @@ class VolatilityArbitrageConfig:
     # Risk management
     max_loss_pct: Decimal = Decimal("50.0")
 
+    # Partial profit taking (reduces return autocorrelation)
+    use_profit_taking: bool = True
+    profit_take_levels: list = field(
+        default_factory=lambda: [Decimal("0.25"), Decimal("0.50"), Decimal("0.75")]
+    )
+    profit_take_sizes: list = field(
+        default_factory=lambda: [Decimal("0.33"), Decimal("0.33"), Decimal("0.34")]
+    )
+
     # Regime detection (optional)
     use_regime_detection: bool = False
     regime_params: Optional[dict[int, RegimeParameters]] = None
@@ -61,6 +70,10 @@ class VolatilityArbitrageConfig:
 
     # QV Strategy Toggle
     use_qv_strategy: bool = False
+
+    # Real Options Data (P0 fix)
+    use_real_options_data: bool = True  # Use real historical IV/TTE instead of placeholders
+    options_data_dir: str = "src/volatility_arbitrage/data/SPY_Options_2019_24"
 
     # QV Feature Windows
     rv_window: int = 20
@@ -122,6 +135,45 @@ class VolatilityArbitrageConfig:
     uncertainty_penalty: float = 2.0
     uncertainty_min_position_pct: float = 0.01
     uncertainty_max_position_pct: float = 0.15
+
+    # Signal smoothing
+    use_signal_smoothing: bool = True
+    signal_smoothing_window: int = 3  # 3-day EMA for smoothing consensus
+    signal_smoothing_min_history: int = 2  # Min data points before smoothing kicks in
+
+    # Adaptive thresholds
+    use_adaptive_thresholds: bool = False
+    adaptive_entry_high_vol: Decimal = Decimal("7.0")
+    adaptive_entry_low_vol: Decimal = Decimal("3.0")
+    adaptive_exit_high_vol: Decimal = Decimal("3.0")
+    adaptive_exit_low_vol: Decimal = Decimal("1.0")
+
+    def to_dict(self) -> dict:
+        """Convert to dictionary."""
+        base = {
+            "entry_threshold_pct": float(self.entry_threshold_pct),
+            "exit_threshold_pct": float(self.exit_threshold_pct),
+            "min_days_to_expiry": self.min_days_to_expiry,
+            "max_days_to_expiry": self.max_days_to_expiry,
+            "delta_rebalance_threshold": float(self.delta_rebalance_threshold),
+            "position_size_pct": float(self.position_size_pct),
+            "max_vega_exposure": float(self.max_vega_exposure),
+            "use_regime_detection": self.use_regime_detection,
+        }
+
+        if self.regime_params:
+            base["regime_params"] = {
+                k: {
+                    "regime_id": v.regime_id,
+                    "entry_threshold_pct": float(v.entry_threshold_pct),
+                    "exit_threshold_pct": float(v.exit_threshold_pct),
+                    "position_size_multiplier": float(v.position_size_multiplier),
+                    "max_vega_multiplier": float(v.max_vega_multiplier),
+                }
+                for k, v in self.regime_params.items()
+            }
+
+        return base
 
 
 class DataConfig(BaseModel):
@@ -411,6 +463,10 @@ def load_strategy_config(config_path: Optional[Path] = None) -> VolatilityArbitr
 
         # QV Strategy
         use_qv_strategy=strategy_data.get("use_qv_strategy", False),
+
+        # Real Options Data (P0 fix)
+        use_real_options_data=strategy_data.get("use_real_options_data", True),
+        options_data_dir=strategy_data.get("options_data_dir", "src/volatility_arbitrage/data/SPY_Options_2019_24"),
 
         # QV Feature Windows
         rv_window=strategy_data.get("rv_window", 20),
